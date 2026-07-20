@@ -1,0 +1,68 @@
+# Host-specific configuration and secrets
+.env
+.env.*
+!.env.example
+config/hosts/*.env
+!config/hosts/*.env.example
+config/system_paths.env
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+dist/
+build/
+
+# ROS and colcon products
+install/
+log/
+
+# Runtime output
+logs/
+outputs/
+runs/
+artifacts/
+data/
+datasets/
+models/
+
+# Recordings and converted data
+*.mcap
+*.bag
+*.db3
+*.hdf5
+*.h5
+*.parquet
+*.arrow
+*.mp4
+*.avi
+*.mov
+
+# Models and checkpoints
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Archives
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.7z
+
+# Editor and temporary files
+.idea/
+.vscode/*.local.json
+*.tmp
+*.temp
+*.bak
+*.backup
+*~
+.DS_Store
