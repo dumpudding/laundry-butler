@@ -1,2 +1,39 @@
 # laundry-butler
 Laundry folding task trained on Piper and VLA / RL methods
+
+## Piper vendor workspace and CAN identity
+
+The Piper ROS 2 driver is maintained as a separate vendor workspace at:
+
+```text
+/home/laundrybutler/piper_ws
+```
+
+It was cloned directly from the original AgileX factory computer and pinned to commit:
+
+```text
+e38e0c62319140116ab176a9d1d3c4b51aa6401e
+```
+
+The workspace builds successfully under ROS 2 Jazzy and Python 3.12. It uses Piper SDK 0.6.1; the original factory computer used SDK 0.5.0. The factory ROS node imports successfully, and all SDK methods it uses are available on the new system.
+
+The workstation currently detects two USB-to-CAN adapters:
+
+| Current kernel name | Stable serial | Current USB path | Driver | State |
+|---|---|---|---|---|
+| `can0` | `0029001C4148570D20343133` | `3-7:1.0` | `gs_usb` | DOWN / STOPPED |
+| `can1` | `003200184148570A20343133` | `3-11.2:1.0` | `gs_usb` | DOWN / STOPPED |
+
+Both devices identify as `bytewerk candleLight USB-to-CAN adapter`.
+
+Important:
+
+- `can0` and `can1` are temporary kernel enumeration names.
+- Left and right arm roles have not yet been physically verified.
+- Do not assume `can0` is the mobile chassis.
+- Do not copy USB bus paths from the original AgileX computer.
+- Bind logical names such as `can_left` and `can_right` using stable adapter serials after the physical left/right mapping is confirmed.
+- Do not run `can_config.sh`, `start_multi_piper.sh`, or launch the dual-arm node until the CAN mapping and arm safety checklist are complete.
+- The factory dual-arm launch defaults to `auto_enable:=true`.
+
+The vendor workspace, its build products, and host-specific CAN configuration are intentionally kept outside the Laundry Butler Git repository.
