@@ -1,1 +1,378 @@
-This document is written by LLMs for LLms; it includes discrepancies to be wary of to increase efficiency and reduce previously encountered mistakes. 
+LAUNDRY BUTLER — EXTERNAL MEMORY FOR AI AGENTS
+Updated: 2026-07-21
+
+## Purpose
+This file records stable project paths, verified hardware mappings, safety rules,
+working methods, and recurring failure points for future ChatGPT, Claude, Codex,
+or other agents.
+
+Update this file when:
+- a stable path or hardware mapping is established;
+- a method succeeds and should be repeated;
+- an unexpected failure reveals a reusable lesson;
+- a safety assumption is confirmed or disproven.
+
+Do not fill it with transient terminal output or speculative conclusions.
+
+
+Critical paths
+==============
+Main Git repository:
+  /home/laundrybutler/laundry-butler
+
+Pinned Piper vendor workspace:
+  /home/laundrybutler/piper_ws
+
+Original AgileX factory computer:
+  SSH: agilex@agilex.local
+  Authoritative factory Piper source:
+    /home/agilex/piper_ros
+
+Shared large-artifact root:
+  /srv/aloha-shared
+
+Never inspect or modify:
+  /home/ubuntu/TableTop
+
+
+Git boundaries
+==============
+Add to Git:
+- application source;
+- configuration templates without host-specific secrets or device paths;
+- documentation;
+- schemas and manifests;
+- small evaluation metadata;
+- this file.
+
+Do not add to Git:
+- /home/laundrybutler/piper_ws;
+- build/, install/, or log/ from ROS workspaces;
+- raw MCAP recordings;
+- videos or datasets;
+- model weights or checkpoints;
+- Conda environments and caches;
+- machine-specific systemd/udev/CAN configuration;
+- large generated files or terminal logs.
+
+Raw MCAP recordings are immutable.
+
+Cleanup must always be reviewed and explicitly approved. Never autonomously delete
+scripts, datasets, checkpoints, or recordings.
+
+
+Source hierarchy
+================
+For Piper/COBOT Magic behavior, use this priority:
+
+1. COBOT Magic manual for physical setup and safety.
+2. Original AgileX factory ROS 2 scripts and README for exact startup workflow.
+3. Factory source code for topics, units, callbacks, and CAN behavior.
+4. Locally validated wrappers and documentation.
+5. Old project scripts only as historical reference.
+
+Do not mix:
+- the newer two-arm CAN architecture;
+- the older four-CAN remote_control architecture;
+- ROS 1 Noetic commands;
+- the customized ROS 2 Jazzy installation.
+
+Verify local source before copying commands.
+
+
+Piper vendor workspace
+======================
+The factory repository was cloned directly over LAN from:
+
+  agilex@agilex.local:/home/agilex/piper_ros
+
+Local path:
+
+  /home/laundrybutler/piper_ws
+
+Pinned detached commit:
+
+  e38e0c62319140116ab176a9d1d3c4b51aa6401e
+
+Push to the origin is disabled.
+
+The sparse checkout includes source and root scripts but excludes the factory
+repository's tracked build/install/log directories.
+
+Build command that succeeded:
+
+  source /opt/ros/jazzy/setup.bash
+  cd /home/laundrybutler/piper_ws
+  colcon build --symlink-install \
+      --packages-select piper_msgs piper_description piper
+
+All three packages build successfully on ROS 2 Jazzy and Python 3.12.
+
+Only verified functional executable:
+
+  piper_single_ctrl
+
+Registered but stale entry points whose Python modules are absent:
+
+  piper_ms_ctrl
+  piper_read_master
+
+Do not run the stale entry points.
+
+
+Piper SDK
+=========
+Original AgileX computer:
+  Piper SDK 0.5.0
+  Python 3.10
+  /home/agilex/.local/lib/python3.10/site-packages/piper_sdk
+
+New workstation:
+  Piper SDK 0.6.1
+  Python 3.12
+  /usr/lib/python3/dist-packages/piper_sdk
+
+The source trees differ, but every API used by the factory node exists with
+compatible signatures on SDK 0.6.1.
+
+Python 3.12 prints invalid-escape SyntaxWarning messages from SDK docstrings.
+These warnings are non-fatal.
+
+All required ROS and SciPy imports succeed.
+
+
+Verified arm-CAN mapping
+========================
+The physical USB-A ports are labeled LARM and RARM. Preserve these labels and
+never move either cable to a different USB port.
+
+Stable mapping:
+
+  can_left
+    serial: 0029001C4148570D20343133
+    current USB path: 3-7:1.0
+    physical port: LARM
+
+  can_right
+    serial: 003200184148570A20343133
+    current USB path: 3-11.2:1.0
+    physical port: RARM
+
+Persistent interface naming is provided by host-specific files:
+
+  /etc/systemd/network/10-piper-can-left.link
+  /etc/systemd/network/11-piper-can-right.link
+
+These files must not be added to Git.
+
+Do not infer arm roles from temporary kernel names such as can0 or can1.
+
+
+CAN configuration
+=================
+Both Piper arm buses use:
+
+  bitrate: 1000000
+  txqueuelen: 1000
+
+Working configuration pattern:
+
+  sudo ip link set can_left down
+  sudo ip link set can_left type can bitrate 1000000
+  sudo ip link set can_left txqueuelen 1000
+  sudo ip link set can_left up
+
+Repeat for can_right.
+
+Do not use restart-ms on this host. The gs_usb candleLight adapters return:
+
+  Device doesn't support restart from Bus Off.
+
+Do not run the copied factory can_config.sh because its USB paths belong to the
+original AgileX computer.
+
+
+Passive CAN audit
+=================
+Both interfaces were verified UP, LOWER_UP, ERROR-ACTIVE at 1,000,000 bit/s.
+
+Five-second active-listener delta:
+
+  can_left
+    rx_packets:       +15706
+    rx_dropped:       +0
+    rx_fifo_errors:   +0
+    rx_missed_errors: +0
+    rx_errors:        +0
+    tx_packets:       +0
+    tx_errors:        +0
+
+  can_right
+    rx_packets:       +15705
+    rx_dropped:       +0
+    rx_fifo_errors:   +0
+    rx_missed_errors: +0
+    rx_errors:        +0
+    tx_packets:       +0
+    tx_errors:        +0
+
+This completes the passive CAN health audit.
+
+Large historical cumulative rx_dropped values were observed, but they remained
+unchanged while hundreds of thousands of new packets arrived. Do not diagnose
+an active transport fault from those cumulative totals alone.
+
+
+Factory node startup behavior
+=============================
+The dual-arm launch defaults to:
+
+  can_left_port := can_left
+  can_right_port := can_right
+  auto_enable := true
+  rviz_ctrl_flag := false
+  girpper_exist := true
+
+Never run the dual-arm launch normally until the safety wrapper and command
+isolation are complete.
+
+The factory node constructor immediately:
+- creates C_PiperInterface;
+- calls ConnectPort();
+- creates command subscriptions;
+- creates an enable subscription;
+- creates an enable service;
+- starts its publishing thread.
+
+auto_enable=false prevents the automatic EnableArm loop, but does not make the
+node receive-only.
+
+ConnectPort() calls PiperInit() by default. PiperInit sends query frames only:
+
+- six motor angle/speed queries using CAN ID 0x472;
+- six motor acceleration-limit queries using CAN ID 0x472;
+- one firmware-version query using CAN ID 0x4AF.
+
+These are non-motion queries. They do not call EnableArm, MotionCtrl, JointCtrl,
+EndPoseCtrl, or GripperCtrl.
+
+Nevertheless, the node remains capable of motion through its command topics,
+enable topic, and enable service.
+
+
+Piper safety rules
+==================
+Before powering on:
+- place both arms in the required horizontal/reset pose;
+- manually close both grippers;
+- keep the emergency stop immediately accessible;
+- preserve all labeled USB connections.
+
+Before replay or inference:
+- physically disconnect/isolate both master-arm power plugs;
+- verify the intended command topic and subscriber;
+- verify message type, units, joint order, gripper representation, limits, rate,
+  CAN mapping, start pose, and emergency-stop access.
+
+In inference/replay mode, /master/joint_* and /puppet/joint_* are feedback topics,
+not command topics.
+
+Do not describe the existing Cartesian return script as safe from arbitrary
+configurations. There is no validated local MoveIt 2 collision-planning setup.
+
+
+Known failure patterns
+======================
+1. Broad filesystem searches
+   Broad find commands under user homes can descend into Miniforge, extensions,
+   caches, and other large trees. Use pruned, targeted searches.
+
+2. Source-inspection output explosion
+   Do not print overlapping context around every keyword match. Use exact method
+   extraction, AST call summaries, or narrowly targeted grep.
+
+3. Nested Markdown fences
+   Shell heredocs containing Markdown triple-backtick fences can collide with
+   the assistant's outer Markdown formatting. Use four-backtick outer fences or
+   avoid nested fences.
+
+4. Cascading clone errors
+   If a clone fails, do not continue with cd, git checkout, or sparse-checkout
+   commands against the nonexistent directory.
+
+5. Gitee authentication
+   Anonymous cloning of the factory Gitee remote failed with Unauthorized.
+   Direct LAN cloning from the original AgileX computer succeeded.
+
+6. Host-specific CAN paths
+   Never copy the original computer's USB bus paths to the new workstation.
+   Use stable serial identities.
+
+7. auto_enable=false assumptions
+   It prevents the startup enable loop but does not remove enable/control
+   subscriptions or the enable service.
+
+
+Current next safe step
+======================
+The Piper build, persistent CAN naming, passive CAN audit, and isolated
+single-arm and dual-arm feedback tests are complete.
+
+The next subsystem is the three-camera setup:
+
+1. Map each stable camera serial to the physical ports labeled FRONT CAM,
+   L CAM, and R CAM without moving cables between ports.
+2. Audit and pin the original AgileX computer's ROS 2 Orbbec source.
+3. Build it in a separate vendor workspace under ROS 2 Jazzy without launching.
+4. Launch one camera at a time by serial and validate RGB, depth, camera-info,
+   frame rate, orientation, and physical assignment using image_view.
+5. Launch all three cameras together.
+6. Use RViz later for TF, point clouds, robot models, and spatial validation.
+
+Do not run the manual's ROS 1 catkin or roslaunch camera commands directly on
+the ROS 2 Jazzy workstation.
+
+Dual-arm isolated observation — 2026-07-20
+================================================
+Both Piper observation nodes ran simultaneously in ROS_DOMAIN_ID=87.
+
+Verified:
+- /piper_left_observe and /piper_right_observe were present.
+- Every remapped position, joint-command, and enable topic had zero publishers.
+- /puppet/joint_left and /puppet/joint_right published at approximately 200 Hz.
+- Both arms reported arm_status=0 and err_code=0.
+- can_left and can_right each sent exactly 13 additional PiperInit query frames.
+- Final TX totals were 26 packets per interface.
+- Both interfaces had zero RX and TX errors.
+- No enable or motion CAN traffic was observed.
+
+A ros2 topic CLI command terminated by timeout may print:
+  failed to initialize wait set: the given context is not valid
+This is a CLI shutdown artifact, not a Piper or CAN failure.
+
+Camera subsystem
+================
+The workstation detects three Orbbec Dabai DC1 cameras:
+
+- CC1WC52009R: /dev/video0 and /dev/video1
+- CC1WC52006V: /dev/video2 and /dev/video3
+- CC1WC52012P: /dev/video4 and /dev/video5
+
+The front/left/right serial mapping has not yet been physically verified.
+
+The original AgileX computer contains the authoritative ROS 2 camera source at:
+  /home/agilex/camera_ros/src/OrbbecSDK_ROS2
+
+Its multi-camera launch defines:
+- camera_f
+- camera_l
+- camera_r
+- front_serial
+- left_serial
+- right_serial
+
+The new workstation currently has image_view installed, but the Orbbec ROS 2
+camera package is not installed or built.
+
+Use image_view first for individual RGB/depth stream validation. Use RViz later
+for robot models, TF, point clouds, and spatial camera visualization.
