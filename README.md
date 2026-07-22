@@ -1,233 +1,228 @@
 # laundry-butler
 
-WORK IN PROGRESS
+**Work in progress**
 
-Laundry folding task trained on Piper using VLA and reinforcement-learning
-methods.
-Made in collaboration with OpenAI's ChatGPT.
+Laundry-folding research on a bimanual Piper platform using vision-language-action and reinforcement-learning methods.
 
 ## Current status
 
-- Three Orbbec Dabai DC1 RGB cameras are mapped, launched, viewed, and recorded.
-- All three cameras have passed individual and simultaneous 30 fps validation.
-- The Piper vendor workspace builds successfully under ROS 2 Jazzy.
-- Stable left/right CAN identities and persistent interface names are configured.
-- Both arms have passed isolated, observation-only feedback validation.
-- No commanded arm motion has been performed under the rebuilt setup.
-- The next workstream is an observation-first arm interface and combined
-  camera-and-arm recording.
+- Three Orbbec Dabai DC1 RGB cameras are mapped by serial number and validated individually and simultaneously near 30 FPS.
+- The camera GUI can launch the RGB camera nodes, show three previews, record selected camera topics to MCAP, and save snapshots.
+- Stable `can_left` and `can_right` identities are configured at 1 Mbit/s.
+- The dual-arm observation launch runs both Piper nodes with `auto_enable=false` and isolates all position, joint, and enable endpoints.
+- The arm GUI shows CAN health, command-isolation status, joint and gripper feedback, end poses, arm status, and MCAP controls.
+- A 3.125-second arm MCAP captured all six selected arm topics at approximately 200 Hz.
+- No commanded arm movement, replay, or inference has been performed under the rebuilt setup.
+- The next workstream is a unified data-collection interface with episode recording, browsing, playback, validation, and human annotations.
 
-## Piper vendor workspace
-
-The Piper ROS 2 driver is maintained separately from this Git repository:
+## Repository layout
 
 ```text
-/home/laundrybutler/piper_ws
+gui/
+├── run_camera_capture_gui.sh
+└── run_arm_status_gui.sh
+
+cameras/
+├── camera_capture_gui.py
+├── multi_camera_rgb.launch.py
+├── README.md
+└── output/                       # Generated; ignored by Git
+
+arms/
+├── arm_status_gui.py
+├── dual_arm_observe.launch.py
+├── README.md
+└── output/                       # Generated; ignored by Git
+
+docs/
+└── for_llms.txt
 ```
 
-It was cloned directly from the original AgileX factory computer and pinned to:
+## Start the interfaces
 
-```text
-e38e0c62319140116ab176a9d1d3c4b51aa6401e
-```
-
-The workspace builds successfully under ROS 2 Jazzy and Python 3.12:
+### Camera interface
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-cd /home/laundrybutler/piper_ws
-
-colcon build --symlink-install \
-    --packages-select piper_msgs piper_description piper
+cd /home/laundrybutler/laundry-butler
+./gui/run_camera_capture_gui.sh
 ```
 
-The new workstation uses Piper SDK 0.6.1. The original factory computer used
-SDK 0.5.0. All SDK methods used by the factory Piper node are available with
-compatible signatures on the new workstation.
+### Arm observation interface
 
-Only `piper_single_ctrl` is verified functional. The registered
-`piper_ms_ctrl` and `piper_read_master` entry points reference absent Python
-modules and must not be used.
+```bash
+cd /home/laundrybutler/laundry-butler
+./gui/run_arm_status_gui.sh
+```
 
-## Verified Piper CAN identity
-
-The physical workstation USB-A ports are labeled `LARM` and `RARM`. Preserve
-these connections and do not move the cables between USB ports.
-
-| Logical interface | Stable adapter serial | Current USB path | Physical role |
-|---|---|---|---|
-| `can_left` | `0029001C4148570D20343133` | `3-7:1.0` | LARM |
-| `can_right` | `003200184148570A20343133` | `3-11.2:1.0` | RARM |
-
-Persistent names are provided by host-specific systemd link files:
+Both interfaces default to:
 
 ```text
-/etc/systemd/network/10-piper-can-left.link
-/etc/systemd/network/11-piper-can-right.link
+ROS_DOMAIN_ID=88
 ```
 
-These files are machine-specific and are not tracked in this repository.
+The camera and arm GUIs currently record their subsystems separately. The upcoming data-collection interface will own synchronized full-episode recording.
 
-Both arm CAN buses use:
+## Camera subsystem
 
-```text
-bitrate: 1000000
-txqueuelen: 1000
-```
-
-Do not run the copied factory `can_config.sh`; its USB paths belong to the
-original AgileX computer.
-
-## Piper validation and safety status
-
-Completed:
-
-- Both CAN interfaces reached `UP`, `LOWER_UP`, and `ERROR-ACTIVE`.
-- Passive CAN monitoring showed active traffic with no new errors.
-- Both Piper nodes ran simultaneously with `auto_enable=false`.
-- Position, joint-command, and enable endpoints were isolated.
-- `/puppet/joint_left` and `/puppet/joint_right` published near 200 Hz.
-- Both arms reported `arm_status=0` and `err_code=0`.
-- Each node sent only the expected 13 Piper initialization query frames.
-- No enable, gripper, joint-motion, Cartesian-motion, or replay commands were
-  sent.
-
-Not completed:
-
-- Teleoperation under the rebuilt setup.
-- Commanded arm movement.
-- Replay or inference.
-- A tracked project-owned observation launch wrapper.
-- Combined camera-and-arm MCAP validation.
-- Final training-topic schema validation.
-
-The manufacturer manual remains the source of truth for physical setup and
-safety.
-
-Before power-on:
-
-- place both arms in the required horizontal/reset pose;
-- manually close both grippers;
-- keep the emergency stop accessible;
-- preserve all labeled USB connections.
-
-Before replay or inference:
-
-- physically disconnect both master-arm power plugs;
-- verify command topic, subscriber, message type, units, joint order, gripper
-  representation, limits, rate, CAN identity, start pose, and emergency stop.
-
-`auto_enable=false` prevents the startup enable loop, but does not make the
-factory node inherently receive-only. Command topics, enable topics, and enable
-services must still be isolated for observation-only operation.
-
-<!-- CAMERA-HARDWARE-MAPPING:START -->
-## Camera hardware mapping
-
-The three Orbbec Dabai DC1 cameras were identified visually using their stable
-serial identities.
-
-| Role | ROS namespace | Stable serial | Stable colour-device link |
-|---|---|---|---|
-| Front/top camera | `camera_f` | `CC1WC52009R` | `/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._Dabai_DC1_CC1WC52009R-video-index0` |
-| Left wrist camera | `camera_l` | `CC1WC52006V` | `/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._Dabai_DC1_CC1WC52006V-video-index0` |
-| Right wrist camera | `camera_r` | `CC1WC52012P` | `/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._Dabai_DC1_CC1WC52012P-video-index0` |
-
-Do not persist numeric `/dev/videoN` names. They may change after reconnecting
-devices or rebooting.
-
-The left and right wrist cameras share part of the USB topology. Camera roles
-must be selected by serial number rather than inferred from parent hubs or
-enumeration order.
-<!-- CAMERA-HARDWARE-MAPPING:END -->
-
-## Camera runtime
-
-The factory Orbbec ROS 2 source is built separately under:
+The local Orbbec vendor workspace is outside this repository:
 
 ```text
 /home/laundrybutler/camera_ws
 ```
 
-The tracked project launch file is:
+Tracked launch file:
 
 ```text
 cameras/multi_camera_rgb.launch.py
 ```
 
-It starts:
+| Role | ROS namespace | Serial |
+|---|---|---|
+| Front/top | `camera_f` | `CC1WC52009R` |
+| Left wrist | `camera_l` | `CC1WC52006V` |
+| Right wrist | `camera_r` | `CC1WC52012P` |
+
+Current stream configuration:
 
 ```text
-camera_f -> CC1WC52009R
-camera_l -> CC1WC52006V
-camera_r -> CC1WC52012P
-```
-
-Current camera settings:
-
-```text
-640x480
-30 fps
+640 × 480
+30 FPS
 MJPG
 RGB only
-depth disabled
-IR disabled
-point clouds disabled
 ```
 
-All three cameras passed simultaneous validation. A 9.26-second combined MCAP
-contained approximately 30 RGB frames per second from each camera, with only
-four transport-layer losses across 1,651 total messages.
+Camera roles are selected by serial number. Do not persist `/dev/videoN` device names.
 
-For camera-health checks, use lightweight `camera_info` cadence and MCAP message
-counts. Do not use `ros2 topic hz` on the large raw-image topic as the primary
-measurement because the Python subscriber can under-report the real stream.
+See [`cameras/README.md`](cameras/README.md) for camera GUI usage and validation details.
 
-Depth is not currently used as an input to the existing OpenPI π0.5 training
-path.
+## Arm subsystem
 
-## Camera capture interface
-
-Launch the interface:
-
-```bash
-cd /home/laundrybutler/laundry-butler
-./capture/run_camera_capture_gui.sh
-```
-
-The interface supports:
-
-- starting and stopping the tracked RGB camera launch;
-- left, front, and right previews;
-- separate stream and preview frame-rate displays;
-- selected-camera MCAP recording;
-- snapshots;
-- output organization in clock-aligned 30-minute folders.
-
-Generated output is written under:
+The local Piper vendor workspace is outside this repository:
 
 ```text
-capture/output/
+/home/laundrybutler/piper_ws
 ```
 
-This directory is ignored by Git.
+Pinned factory-source commit:
 
-`Stream FPS` reflects the lightweight camera publication cadence.
-`View FPS` reflects the intentionally reduced GUI preview rate. MCAP recording
-continues at the full camera publication rate.
+```text
+e38e0c62319140116ab176a9d1d3c4b51aa6401e
+```
+
+Tracked observation launch:
+
+```text
+arms/dual_arm_observe.launch.py
+```
+
+| Interface | Adapter serial | Physical role |
+|---|---|---|
+| `can_left` | `0029001C4148570D20343133` | LARM |
+| `can_right` | `003200184148570A20343133` | RARM |
+
+The arm interface records these topics by default:
+
+```text
+/puppet/joint_left
+/puppet/joint_right
+/puppet/end_pose_left
+/puppet/end_pose_right
+/piper_left_ctrl_node/arm_status
+/piper_right_ctrl_node/arm_status
+```
+
+`/puppet/joint_*` contains six arm joints followed by gripper feedback:
+
+```text
+position[0:6]   Six arm joints in radians
+position[6]     Gripper feedback in metres
+effort[6]       Scaled gripper effort feedback
+```
+
+`/master/joint_*` represents command-state feedback and is not used as measured physical state.
+
+The arm GUI intentionally contains no enable, reset, stop, joint-command, Cartesian-command, gripper-command, replay, or inference controls.
+
+See [`arms/README.md`](arms/README.md) for usage and safety constraints.
+
+## Safety
+
+The manufacturer workflow and pinned factory source are the sources of truth.
+
+Before powering or observing the arms:
+
+- Place both arms in the required horizontal/reset pose.
+- Manually close both grippers.
+- Preserve the labeled USB and CAN connections.
+- Keep the emergency stop accessible.
+
+`auto_enable=false` prevents automatic startup enable, but it does not remove the factory command and enable endpoints. The project launch remaps those endpoints, and the GUI verifies their isolation before recording.
+
+Before replay or inference:
+
+- Physically disconnect or otherwise isolate both master-arm power plugs.
+- Verify command topics and subscribers.
+- Verify units, joint order, gripper representation, limits, command rate, CAN identity, and start pose.
+- Keep the emergency stop accessible.
+
+## Data-collection roadmap
+
+The unified data-collection interface should treat one episode as:
+
+```text
+Immutable MCAP
++ episode metadata
++ annotation sidecar
++ validation report
+```
+
+Initial functions:
+
+- Start and stop camera and observation-only arm nodes.
+- Run preflight checks before recording.
+- Record all required camera and arm topics into one episode.
+- Assign an episode ID, task, garment, operator, initial-state level, and notes.
+- Browse recorded episodes without modifying their MCAP files.
+- Play synchronized front, left, and right camera streams.
+- Display arm state alongside playback.
+- Mark success, failure reason, demonstration quality, and excluded ranges.
+- Create and edit timestamped natural-language task stages.
+- Validate topic presence, duration, message counts, rates, and timestamp coverage.
+
+Recommended episode layout:
+
+```text
+episode_<id>/
+├── bag/
+│   ├── *.mcap
+│   └── metadata.yaml
+├── episode.json
+├── annotations.json
+├── validation.json
+└── recorder.log
+```
+
+MCAP files remain immutable. Human and future automatic annotations are stored in editable, versioned sidecar files.
 
 ## Repository boundaries
 
-Add source code, launch files, documentation, schemas, configuration templates,
-and small evaluation metadata to Git.
+Add to Git:
 
-Do not add:
+- Application source
+- ROS launch wrappers
+- Human-facing GUI launchers
+- Documentation
+- Schemas and manifests
+- Small evaluation metadata
 
-- `/home/laundrybutler/piper_ws`;
-- `/home/laundrybutler/camera_ws`;
-- `capture/output/`;
-- ROS workspace build, install, or log directories;
-- MCAP recordings;
-- snapshots, videos, or datasets;
-- model weights or checkpoints;
-- system-specific CAN or device configuration.
+Do not add to Git:
+
+- `/home/laundrybutler/piper_ws`
+- `/home/laundrybutler/camera_ws`
+- `cameras/output/`
+- `arms/output/`
+- Raw MCAP recordings
+- Snapshots, videos, datasets, or converted training data
+- ROS workspace `build/`, `install/`, or `log/`
+- Model weights or checkpoints
+- Host-specific CAN, udev, or systemd configuration

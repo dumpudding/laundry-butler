@@ -1,58 +1,155 @@
 # Camera capture GUI
 
-A small ROS 2 interface for the Laundry Butler camera workflow.
+ROS 2 camera diagnostics and recording interface for the Laundry Butler project.
 
-## Features
+## Camera mapping
 
-- Left, front, and right RGB previews with preserved aspect ratio.
-- Per-camera live FPS labels, updated every two seconds.
-- Per-camera recording checkboxes.
-- Coordinated MCAP recording through `ros2 bag record`.
-- PNG snapshots from selected cameras.
-- Output grouped into clock-aligned 30-minute folders.
-- Active recordings automatically rotate at each half-hour boundary.
+| Role | ROS namespace | Serial |
+|---|---|---|
+| Front/top | `camera_f` | `CC1WC52009R` |
+| Left wrist | `camera_l` | `CC1WC52006V` |
+| Right wrist | `camera_r` | `CC1WC52012P` |
 
-## Output
+Camera roles are selected by serial number. Do not persist `/dev/videoN` names because numeric device assignments may change after reconnecting cameras or rebooting.
 
-Generated captures go to:
+## Current stream configuration
 
 ```text
-/home/laundrybutler/laundry-butler/cameras/output/YYYYMMDD/HHMM-HHMM/
+Resolution: 640 × 480
+Frame rate: 30 FPS
+Format: MJPG
+Colour: enabled
+Depth: disabled
+Infrared: disabled
+Point cloud: disabled
 ```
 
-The output directory is ignored by Git.
-
-## Dependency check
-
-```bash
-source /opt/ros/jazzy/setup.bash
-python3 -c 'from PyQt5.QtWidgets import QApplication; print("PyQt5 OK")'
-```
-
-Install only if that check fails:
-
-```bash
-sudo apt install python3-pyqt5
-```
+Depth is intentionally excluded from the current OpenPI π0.5 training path.
 
 ## Run
-
-Launch the RGB cameras first:
-
-```bash
-source /opt/ros/jazzy/setup.bash
-source /home/laundrybutler/camera_ws/install/setup.bash
-export ROS_DOMAIN_ID=88
-
-ros2 launch \
-  /home/laundrybutler/laundry-butler/cameras/multi_camera_rgb.launch.py
-```
-
-Then launch the interface in another terminal:
 
 ```bash
 cd /home/laundrybutler/laundry-butler
 ./gui/run_camera_capture_gui.sh
 ```
 
-The first version records camera topics only. Add robot feedback topics after the Piper observation launch is finalized.
+The launcher sources:
+
+```text
+/opt/ros/jazzy/setup.bash
+/home/laundrybutler/camera_ws/install/setup.bash
+```
+
+It defaults to:
+
+```text
+ROS_DOMAIN_ID=88
+```
+
+## Interface
+
+The GUI provides:
+
+- Start and stop of the tracked three-camera ROS launch.
+- Left, front, and right previews.
+- Aspect-ratio-preserving image scaling.
+- Per-camera recording selection.
+- MCAP start and stop controls.
+- Snapshot capture.
+- Separate stream and GUI preview frame-rate displays.
+- Clock-aligned 30-minute output folders.
+
+The GUI refuses to start duplicate camera nodes when an existing camera launch is already active. It only stops a launch process that it started itself.
+
+## Frame-rate interpretation
+
+The interface shows two different rates:
+
+```text
+Stream FPS
+View FPS
+```
+
+`Stream FPS` is measured using lightweight `camera_info` messages and reflects the camera publication cadence.
+
+`View FPS` is the intentionally reduced GUI preview rate. It may remain around 7–10 FPS while the camera stream and MCAP recording continue near 30 FPS.
+
+Use MCAP message counts as the authoritative recording-rate measurement.
+
+## Recorded topics
+
+For each selected camera:
+
+```text
+/camera_<role>/color/image_raw
+/camera_<role>/color/camera_info
+```
+
+For all three cameras:
+
+```text
+/camera_f/color/image_raw
+/camera_f/color/camera_info
+/camera_l/color/image_raw
+/camera_l/color/camera_info
+/camera_r/color/image_raw
+/camera_r/color/camera_info
+```
+
+## Validation
+
+A simultaneous three-camera test recorded approximately:
+
+```text
+Front image:       29.9 Hz
+Left image:        29.9 Hz
+Right image:       29.5 Hz
+```
+
+A later GUI-created 17.33-second MCAP recorded:
+
+```text
+Front image: 505 messages
+Left image:  519 messages
+Right image: 519 messages
+```
+
+The saved recording remained near 30 FPS even when the GUI preview displayed a substantially lower rate.
+
+Use the following camera-health checks:
+
+1. `camera_info` cadence.
+2. MCAP message counts divided by duration.
+3. Camera launch logs for decode, reconnect, or device failures.
+
+Do not use `ros2 topic hz` on `sensor_msgs/Image` as the primary health check. Python deserialization of large raw image messages can substantially under-report the real stream rate.
+
+## Output
+
+Generated recordings, snapshots, and runtime logs are written under:
+
+```text
+/home/laundrybutler/laundry-butler/cameras/output/
+```
+
+Typical layout:
+
+```text
+cameras/output/
+└── YYYYMMDD/
+    └── HHMM-HHMM/
+        └── recording-HHMMSS/
+            ├── bag/
+            │   ├── bag_0.mcap
+            │   └── metadata.yaml
+            ├── snapshots/
+            └── rosbag.log
+```
+
+This directory is ignored by Git.
+
+## Scope
+
+This camera interface is a subsystem diagnostic and recording tool.
+
+The upcoming unified data-collection interface will record synchronized camera and arm topics into one episode and will provide episode browsing, playback, validation, and annotation.
