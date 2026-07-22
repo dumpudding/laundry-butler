@@ -315,19 +315,16 @@ Known failure patterns
 
 Current next safe step
 ======================
-The Piper build, persistent CAN naming, passive CAN audit, and isolated
-single-arm and dual-arm feedback tests are complete.
+Camera serial mapping is complete.
 
-The next subsystem is the three-camera setup:
-
-1. Map each stable camera serial to the physical ports labeled FRONT CAM,
-   L CAM, and R CAM without moving cables between ports.
-2. Audit and pin the original AgileX computer's ROS 2 Orbbec source.
-3. Build it in a separate vendor workspace under ROS 2 Jazzy without launching.
-4. Launch one camera at a time by serial and validate RGB, depth, camera-info,
-   frame rate, orientation, and physical assignment using image_view.
+Next:
+1. Audit and pin the original AgileX ROS 2 Orbbec source.
+2. Build it in a separate vendor workspace under ROS 2 Jazzy without launching.
+3. Launch one camera at a time using the verified serial assignments.
+4. Validate RGB, aligned depth, camera_info, frame rate, and orientation.
 5. Launch all three cameras together.
-6. Use RViz later for TF, point clouds, robot models, and spatial validation.
+6. Use image_view first; use RViz later for TF, point clouds, and robot-relative
+   spatial validation.
 
 Do not run the manual's ROS 1 catkin or roslaunch camera commands directly on
 the ROS 2 Jazzy workstation.
@@ -358,7 +355,19 @@ The workstation detects three Orbbec Dabai DC1 cameras:
 - CC1WC52006V: /dev/video2 and /dev/video3
 - CC1WC52012P: /dev/video4 and /dev/video5
 
-The front/left/right serial mapping has not yet been physically verified.
+The front/left/right mapping was verified visually with ffplay:
+
+- camera_f / front: CC1WC52009R
+- camera_l / left wrist: CC1WC52006V
+- camera_r / right wrist: CC1WC52012P
+
+Use the stable serials or /dev/v4l/by-id links. Do not persist numeric
+/dev/videoN assignments because they can change after reconnects or reboot.
+
+A previous attempt to identify the front camera by disconnecting a labeled
+computer-side connection removed two cameras. CC1WC52006V and CC1WC52012P share
+part of the USB topology, so physical parent-port topology is not a reliable
+camera-role identifier.
 
 The original AgileX computer contains the authoritative ROS 2 camera source at:
   /home/agilex/camera_ros/src/OrbbecSDK_ROS2

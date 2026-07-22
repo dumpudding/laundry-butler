@@ -66,3 +66,4 @@ models/
 *.backup
 *~
 .DS_Store
+/logs/

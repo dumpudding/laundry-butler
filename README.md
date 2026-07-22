@@ -37,3 +37,23 @@ Important:
 - The factory dual-arm launch defaults to `auto_enable:=true`.
 
 The vendor workspace, its build products, and host-specific CAN configuration are intentionally kept outside the Laundry Butler Git repository.
+
+<!-- CAMERA-HARDWARE-MAPPING:START -->
+## Camera hardware mapping
+
+The three Orbbec Dabai DC1 cameras were identified visually using `ffplay` and
+their stable `/dev/v4l/by-id` serial links.
+
+| Role | ROS namespace | Stable serial | Stable color-device link |
+|---|---|---|---|
+| Front/top camera | `camera_f` | `CC1WC52009R` | `/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._Dabai_DC1_CC1WC52009R-video-index0` |
+| Left wrist camera | `camera_l` | `CC1WC52006V` | `/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._Dabai_DC1_CC1WC52006V-video-index0` |
+| Right wrist camera | `camera_r` | `CC1WC52012P` | `/dev/v4l/by-id/usb-Sonix_Technology_Co.__Ltd._Dabai_DC1_CC1WC52012P-video-index0` |
+
+Do not persist `/dev/video0`, `/dev/video2`, or `/dev/video4`; numeric video
+device names may change after reconnecting devices or rebooting.
+
+The left and right wrist cameras currently share part of the USB topology.
+Camera roles must be selected by serial number rather than inferred from USB
+enumeration or parent-hub layout.
+<!-- CAMERA-HARDWARE-MAPPING:END -->
