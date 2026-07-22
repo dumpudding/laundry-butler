@@ -69,6 +69,13 @@ models/
 /logs/
 
 # Camera capture runtime output
-/capture/output/
-/capture/__pycache__/
-/capture/*.pyc
+/arms/output/
+
+# Generated GUI output
+/cameras/output/
+
+# Python cache
+/cameras/__pycache__/
+/arms/__pycache__/
+/cameras/*.pyc
+/arms/*.pyc

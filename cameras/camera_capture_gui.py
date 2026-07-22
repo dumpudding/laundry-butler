@@ -40,14 +40,13 @@ from PyQt5.QtWidgets import (
 )
 
 APP_DIR = Path(__file__).resolve().parent
-REPO_ROOT = APP_DIR.parent
 OUTPUT_ROOT = Path(
     os.environ.get("LAUNDRY_BUTLER_CAPTURE_ROOT", str(APP_DIR / "output"))
 ).expanduser()
 CAMERA_LAUNCH_FILE = Path(
     os.environ.get(
         "LAUNDRY_BUTLER_CAMERA_LAUNCH",
-        str(REPO_ROOT / "launch" / "multi_camera_rgb.launch.py"),
+        str(APP_DIR / "multi_camera_rgb.launch.py"),
     )
 ).expanduser()
 

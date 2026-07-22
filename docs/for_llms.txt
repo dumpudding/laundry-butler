@@ -27,7 +27,7 @@ Pinned camera vendor workspace:
   /home/laundrybutler/camera_ws
 
 Tracked three-camera launch:
-  /home/laundrybutler/laundry-butler/launch/multi_camera_rgb.launch.py
+  /home/laundrybutler/laundry-butler/cameras/multi_camera_rgb.launch.py
 
 Tracked capture interface:
   /home/laundrybutler/laundry-butler/capture/camera_capture_gui.py
@@ -421,7 +421,7 @@ Local vendor workspace:
   /home/laundrybutler/camera_ws
 
 Tracked project launch:
-  /home/laundrybutler/laundry-butler/launch/multi_camera_rgb.launch.py
+  /home/laundrybutler/laundry-butler/cameras/multi_camera_rgb.launch.py
 
 Verified mapping:
 - camera_f / front:

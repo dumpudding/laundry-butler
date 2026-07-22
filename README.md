@@ -152,7 +152,7 @@ The factory Orbbec ROS 2 source is built separately under:
 The tracked project launch file is:
 
 ```text
-launch/multi_camera_rgb.launch.py
+cameras/multi_camera_rgb.launch.py
 ```
 
 It starts:
