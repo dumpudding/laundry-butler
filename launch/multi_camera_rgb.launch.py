@@ -1,19 +1,17 @@
 """
-
-*****NOTE THAT THIS LAUNCH FILE IS ONLY RGB CAMERAS, NOT DEPTH CAMERAS.*****
+NOTE THAT THIS LAUNCH FILE IS ONLY RGB CAMERAS, NOT DEPTH CAMERAS.
 Orbbec posesses depth info; however, this project will not be using it and is not configured for it.
-
 """
 
 from pathlib import Path
 
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import get_package_share_directory  # type: ignore
 from launch import LaunchDescription
-from launch.actions import IncludeLaunchDescription
-from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.actions import IncludeLaunchDescription  # type: ignore
+from launch.launch_description_sources import PythonLaunchDescriptionSource  # type: ignore
 
 
-CAMERAS = (  # the serial numbers are local to laundrybutler on ubuntu (i think)
+CAMERAS = (  # Working Serial numbers for the Cameras. Reverify after cameras, cables, or USB topology are changed.
     ("camera_f", "CC1WC52009R"),
     ("camera_l", "CC1WC52006V"),
     ("camera_r", "CC1WC52012P"),

@@ -1,6 +1,8 @@
 # laundry-butler
 Laundry folding task trained on Piper and VLA / RL methods
 
+Made in collaboration with OpenAI's ChatGPT.
+
 ## Piper vendor workspace and CAN identity
 
 The Piper ROS 2 driver is maintained as a separate vendor workspace at:
@@ -57,3 +59,22 @@ The left and right wrist cameras currently share part of the USB topology.
 Camera roles must be selected by serial number rather than inferred from USB
 enumeration or parent-hub layout.
 <!-- CAMERA-HARDWARE-MAPPING:END -->
+
+## Camera capture interface
+
+Launch the interface:
+
+```bash
+cd /home/laundrybutler/laundry-butler
+./capture/run_camera_capture_gui.sh
+```
+
+The interface can start and stop the RGB camera nodes, preview all three cameras, record selected topics to MCAP, and save snapshots.
+
+Generated output is written under:
+
+```text
+capture/output/
+```
+
+This directory is ignored by Git.
