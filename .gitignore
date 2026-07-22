@@ -67,3 +67,8 @@ models/
 *~
 .DS_Store
 /logs/
+
+# Camera capture runtime output
+/capture/output/
+/capture/__pycache__/
+/capture/*.pyc
