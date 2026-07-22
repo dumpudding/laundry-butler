@@ -37,7 +37,7 @@ The launcher sources:
 
 ```text
 /opt/ros/jazzy/setup.bash
-/home/laundrybutler/camera_ws/install/setup.bash
+/home/laundrybutler/laundry-butler/cameras/camera_ws/install/setup.bash
 ```
 
 It defaults to:
