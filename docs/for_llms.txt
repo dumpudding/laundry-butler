@@ -1,5 +1,5 @@
 LAUNDRY BUTLER — EXTERNAL MEMORY FOR AI AGENTS
-Updated: 2026-07-21
+Updated: 2026-07-22
 
 ## Purpose
 This file records stable project paths, verified hardware mappings, safety rules,
@@ -23,10 +23,25 @@ Main Git repository:
 Pinned Piper vendor workspace:
   /home/laundrybutler/piper_ws
 
+Pinned camera vendor workspace:
+  /home/laundrybutler/camera_ws
+
+Tracked three-camera launch:
+  /home/laundrybutler/laundry-butler/launch/multi_camera_rgb.launch.py
+
+Tracked capture interface:
+  /home/laundrybutler/laundry-butler/capture/camera_capture_gui.py
+  /home/laundrybutler/laundry-butler/capture/run_camera_capture_gui.sh
+
+Generated capture output:
+  /home/laundrybutler/laundry-butler/capture/output
+
 Original AgileX factory computer:
   SSH: agilex@agilex.local
   Authoritative factory Piper source:
     /home/agilex/piper_ros
+  Authoritative factory camera source:
+    /home/agilex/camera_ros/src/OrbbecSDK_ROS2
 
 Shared large-artifact root:
   /srv/aloha-shared
@@ -34,11 +49,11 @@ Shared large-artifact root:
 Never inspect or modify:
   /home/ubuntu/TableTop
 
-
 Git boundaries
 ==============
 Add to Git:
 - application source;
+- tracked ROS launch wrappers;
 - configuration templates without host-specific secrets or device paths;
 - documentation;
 - schemas and manifests;
@@ -47,9 +62,11 @@ Add to Git:
 
 Do not add to Git:
 - /home/laundrybutler/piper_ws;
+- /home/laundrybutler/camera_ws;
+- /home/laundrybutler/laundry-butler/capture/output;
 - build/, install/, or log/ from ROS workspaces;
 - raw MCAP recordings;
-- videos or datasets;
+- snapshots, videos, or datasets;
 - model weights or checkpoints;
 - Conda environments and caches;
 - machine-specific systemd/udev/CAN configuration;
@@ -57,9 +74,8 @@ Do not add to Git:
 
 Raw MCAP recordings are immutable.
 
-Cleanup must always be reviewed and explicitly approved. Never autonomously delete
-scripts, datasets, checkpoints, or recordings.
-
+Cleanup must always be reviewed and explicitly approved. Never autonomously
+delete scripts, datasets, checkpoints, recordings, or capture output.
 
 Source hierarchy
 ================
@@ -293,11 +309,10 @@ Known failure patterns
 
 3. Nested Markdown fences
    Shell heredocs containing Markdown triple-backtick fences can collide with
-   the assistant's outer Markdown formatting. Use four-backtick outer fences or
-   avoid nested fences.
+   outer Markdown formatting. Use four-backtick outer fences or avoid nesting.
 
 4. Cascading clone errors
-   If a clone fails, do not continue with cd, git checkout, or sparse-checkout
+   If a clone fails, do not continue with cd, checkout, or sparse-checkout
    commands against the nonexistent directory.
 
 5. Gitee authentication
@@ -312,22 +327,72 @@ Known failure patterns
    It prevents the startup enable loop but does not remove enable/control
    subscriptions or the enable service.
 
+8. Raw-image frame-rate measurement
+   `ros2 topic hz` on sensor_msgs/Image can report severe artificial stalls
+   because its Python subscriber must deserialize large raw frames. Validate
+   camera cadence using camera_info and actual MCAP message counts.
+
+9. Duplicate camera launches
+   Starting multi_camera_rgb.launch.py while an existing copy is active creates
+   duplicate node-name warnings, device-lock waits, and unnecessary processing.
+   Run only one camera launch instance.
+
+10. Orbbec default Log directory
+    list_devices_node uses the SDK default configuration and writes ./Log in its
+    current working directory. Run it from a disposable temporary directory.
+    Normal camera launches use the configured logs/orbbec path.
+
+11. ROS setup and Bash nounset
+    ROS-generated setup scripts are not safe under `set -u`. Source the ROS
+    environments first, then enable nounset.
+
+12. rclpy Node property names
+    Do not assign application state to `self.subscriptions`; Node exposes it as
+    a read-only property. Use a private name such as `self._subscriptions`.
+
+13. GUI frame-rate interpretation
+    Stream FPS is measured from lightweight camera_info callbacks. View FPS is
+    the deliberately capped preview-rendering rate. Neither should be confused
+    with MCAP counts, which are the authoritative recording-rate measurement.
+
+Arm interface goal
+==================
+Build a project-owned arm interface similar in role to the camera interface.
+
+Initial scope must remain observation-first:
+- start and stop the isolated Piper observation nodes;
+- show can_left and can_right state;
+- show left and right feedback rates;
+- show arm_status and err_code;
+- show joint positions and gripper state;
+- select arm feedback topics for MCAP recording;
+- clearly indicate that command endpoints are isolated.
+
+Do not add enable, joint-command, Cartesian-command, replay, or inference
+controls until the manufacturer safety workflow and exact local topic behavior
+have been reverified.
+
+A visual arm-position display is optional. Prefer the existing robot description
+and RViz/joint-state visualization if it can be integrated with low overhead.
+Do not build a custom simulator unless it provides a clear benefit. Visual
+rendering must not block data collection or inference.
 
 Current next safe step
 ======================
-Camera serial mapping is complete.
+Camera setup is complete for the current RGB-only π0.5 workflow.
 
 Next:
-1. Audit and pin the original AgileX ROS 2 Orbbec source.
-2. Build it in a separate vendor workspace under ROS 2 Jazzy without launching.
-3. Launch one camera at a time using the verified serial assignments.
-4. Validate RGB, aligned depth, camera_info, frame rate, and orientation.
-5. Launch all three cameras together.
-6. Use image_view first; use RViz later for TF, point clouds, and robot-relative
-   spatial validation.
+1. Reinspect the manufacturer arm startup workflow and the pinned factory source.
+2. Create a tracked observation-only dual-arm launch wrapper.
+3. Preserve auto_enable=false and isolate every command and enable endpoint.
+4. Validate both arm feedback streams without motion.
+5. Build the first non-commanding arm status interface.
+6. Record one short combined MCAP containing the three RGB streams and the
+   verified arm feedback topics.
+7. Inspect per-topic counts, rates, units, ordering, gripper representation, and
+   timestamps before designing the final training recorder.
 
-Do not run the manual's ROS 1 catkin or roslaunch camera commands directly on
-the ROS 2 Jazzy workstation.
+Replay, inference, or commanded motion must not occur during this stage.
 
 Dual-arm isolated observation — 2026-07-20
 ================================================
@@ -349,39 +414,97 @@ This is a CLI shutdown artifact, not a Piper or CAN failure.
 
 Camera subsystem
 ================
-The workstation detects three Orbbec Dabai DC1 cameras:
-
-- CC1WC52009R: /dev/video0 and /dev/video1
-- CC1WC52006V: /dev/video2 and /dev/video3
-- CC1WC52012P: /dev/video4 and /dev/video5
-
-The front/left/right mapping was verified visually with ffplay:
-
-- camera_f / front: CC1WC52009R
-- camera_l / left wrist: CC1WC52006V
-- camera_r / right wrist: CC1WC52012P
-
-Use the stable serials or /dev/v4l/by-id links. Do not persist numeric
-/dev/videoN assignments because they can change after reconnects or reboot.
-
-A previous attempt to identify the front camera by disconnecting a labeled
-computer-side connection removed two cameras. CC1WC52006V and CC1WC52012P share
-part of the USB topology, so physical parent-port topology is not a reliable
-camera-role identifier.
-
-The original AgileX computer contains the authoritative ROS 2 camera source at:
+Factory source:
   /home/agilex/camera_ros/src/OrbbecSDK_ROS2
 
-Its multi-camera launch defines:
-- camera_f
-- camera_l
-- camera_r
-- front_serial
-- left_serial
-- right_serial
+Local vendor workspace:
+  /home/laundrybutler/camera_ws
 
-The new workstation currently has image_view installed, but the Orbbec ROS 2
-camera package is not installed or built.
+Tracked project launch:
+  /home/laundrybutler/laundry-butler/launch/multi_camera_rgb.launch.py
 
-Use image_view first for individual RGB/depth stream validation. Use RViz later
-for robot models, TF, point clouds, and spatial camera visualization.
+Verified mapping:
+- camera_f / front:
+    serial CC1WC52009R
+    USB depth path 3-8.4
+- camera_l / left wrist:
+    serial CC1WC52006V
+    USB depth path 3-11.3.4
+- camera_r / right wrist:
+    serial CC1WC52012P
+    USB depth path 3-11.4.4
+
+Do not persist /dev/videoN names. Select camera roles by serial number.
+
+Current RGB settings:
+- 640x480;
+- 30 fps;
+- MJPG;
+- depth disabled;
+- IR disabled;
+- point clouds disabled.
+
+Validated:
+- each camera individually publishes camera_info at approximately 29.9 Hz;
+- all three cameras run simultaneously;
+- all six RGB and camera_info topics are present;
+- a 9.260-second combined MCAP recorded:
+    front: 277 image, 277 camera_info;
+    left: 277 image, 275 camera_info;
+    right: 273 image, 272 camera_info;
+- only four transport messages were lost in that validation;
+- a later GUI-created 17.332-second MCAP recorded:
+    front: 505 image;
+    left: 519 image;
+    right: 519 image;
+- recording remained near 30 fps despite a slower GUI preview.
+
+The camera subsystem is complete for the current RGB-only π0.5 workflow.
+
+Do not use raw-image `ros2 topic hz` as the primary health check. Use:
+1. camera_info cadence;
+2. MCAP per-topic counts;
+3. launch-terminal decode/reconnect errors.
+
+Depth is intentionally excluded from the current policy input.
+
+The canonical runtime log root is:
+  /home/laundrybutler/laundry-butler/logs
+
+Orbbec logs belong under:
+  /home/laundrybutler/laundry-butler/logs/orbbec
+
+Running list_devices_node from the repository creates an uppercase ./Log because
+that utility uses the SDK default configuration. Run it in a temporary working
+directory and remove that directory afterward.
+
+
+Camera capture interface
+========================
+Tracked files:
+  /home/laundrybutler/laundry-butler/capture/camera_capture_gui.py
+  /home/laundrybutler/laundry-butler/capture/run_camera_capture_gui.sh
+
+Generated output:
+  /home/laundrybutler/laundry-butler/capture/output
+
+The output directory must remain ignored by Git.
+
+Current functions:
+- start and stop the tracked camera launch;
+- display left, front, and right previews;
+- preserve image aspect ratio;
+- show Stream FPS and View FPS separately;
+- select cameras for MCAP recording;
+- start and stop recording;
+- save snapshots;
+- organize output into 30-minute time buckets.
+
+Stream FPS comes from camera_info.
+View FPS is the intentionally capped GUI rendering rate.
+MCAP per-topic counts are authoritative for recorded frame rate.
+
+The GUI must refuse to start a duplicate camera launch when expected camera
+nodes already exist. It should stop only a camera-launch process that it started
+itself.
+
