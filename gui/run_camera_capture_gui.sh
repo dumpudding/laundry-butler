@@ -4,7 +4,7 @@ set -eo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 source /opt/ros/jazzy/setup.bash
-source /home/laundrybutler/laundry-butler/cameras/camera_ws/install/setup.bash
+source /home/laundrybutler/camera_ws/install/setup.bash
 
 set -u
 
