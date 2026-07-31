@@ -1,5 +1,6 @@
 # Current Mapping on Computer Ubuntu@Ubuntu
 
+```
 ┌─┐     ┌─┐     ┌─┐     ┌─┐  
 │ │     │ │     │ │     │ │
 │ │     │ │     │ │     │ │  
@@ -10,3 +11,4 @@
                 │ │     │ │  
                 └─┘     └─┘  
                 左臂   中间相机
+```
