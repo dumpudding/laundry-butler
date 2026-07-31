@@ -1,7 +1,6 @@
 # LAUNDRY BUTLER — EXTERNAL MEMORY FOR AI AGENTS
 
-Updated: 2026-07-22
-
+Updated: 2026-07-31
 ## Purpose
 
 This file records stable project paths, verified hardware mappings, safety rules, successful methods, and recurring failure points for future ChatGPT, Claude, Codex, or other agents working on Laundry Butler.
@@ -58,6 +57,7 @@ Human-facing GUI entrypoints:
 ```text
 /home/laundrybutler/laundry-butler/gui/run_camera_capture_gui.sh
 /home/laundrybutler/laundry-butler/gui/run_arm_status_gui.sh
+/home/laundrybutler/laundry-butler/gui/run_data_collection_gui.sh
 ```
 
 Camera subsystem:
@@ -126,7 +126,8 @@ Current intended tracked layout:
 ```text
 gui/
 ├── run_camera_capture_gui.sh
-└── run_arm_status_gui.sh
+├── run_arm_status_gui.sh
+└── run_data_collection_gui.sh
 
 cameras/
 ├── camera_capture_gui.py
@@ -138,15 +139,30 @@ arms/
 ├── dual_arm_observe.launch.py
 └── README.md
 
+data_collection/
+├── data_collection_gui.py
+├── episode_store.py
+├── preflight.py
+├── validation.py
+├── stage_vocabulary.json
+├── schemas/
+└── README.md
+
 docs/
-└── for_llms.txt
+├── for_llms.txt
+├── can_topic_restart.txt
+└── data_collection_ui_plan.md
+
+tests/
+└── test_episode_store.py
 ```
 
-Subsystem implementation and ROS launch files belong together:
+Subsystem implementation and ROS launch files belong with their subsystem:
 
 ```text
 cameras/
 arms/
+data_collection/
 ```
 
 Human-facing scripts belong in:
@@ -156,7 +172,6 @@ gui/
 ```
 
 Do not recreate a generic root `launch/` directory unless the repository architecture changes deliberately.
-
 
 ## Git boundaries
 
@@ -171,6 +186,7 @@ Add to Git:
 - schemas and manifests;
 - annotation vocabularies;
 - small evaluation metadata;
+- tests;
 - this file.
 
 Do not add to Git:
@@ -179,7 +195,8 @@ Do not add to Git:
 - `/home/laundrybutler/camera_ws`;
 - `cameras/output/`;
 - `arms/output/`;
-- future data-collection episode output;
+- `data_collection/output/`;
+- production data-collection episode output;
 - ROS workspace `build/`, `install/`, or `log/`;
 - raw MCAP recordings;
 - snapshots, videos, or datasets;
@@ -216,6 +233,36 @@ The user does not want backup or patch-version files such as:
 
 Overwrite tracked source files directly after validating the intended edit.
 
+
+## Data-collection subsystem paths
+
+Tracked implementation:
+
+```text
+/home/laundrybutler/laundry-butler/data_collection/data_collection_gui.py
+/home/laundrybutler/laundry-butler/data_collection/episode_store.py
+/home/laundrybutler/laundry-butler/data_collection/preflight.py
+/home/laundrybutler/laundry-butler/data_collection/validation.py
+/home/laundrybutler/laundry-butler/data_collection/README.md
+```
+
+Human-facing launcher:
+
+```text
+/home/laundrybutler/laundry-butler/gui/run_data_collection_gui.sh
+```
+
+Generated local fallback output:
+
+```text
+/home/laundrybutler/laundry-butler/data_collection/output
+```
+
+Production episode roots are selected with:
+
+```text
+LAUNDRY_BUTLER_DATA_ROOT
+```
 
 ## Source hierarchy
 
@@ -445,6 +492,56 @@ Device doesn't support restart from Bus Off.
 
 Do not run the copied factory `can_config.sh`; its USB paths belong to the original AgileX computer.
 
+
+## USB-CAN `gs_usb` transport recovery
+
+A Linux CAN interface may remain present while the USB-CAN adapter behind it is stuck.
+
+Verified July 31, 2026 symptoms:
+
+```text
+RTNETLINK answers: Protocol error
+usb ... Error -71 while reading timestamp
+gs_usb ... Couldn't start device (err=-71)
+gs_usb ... failed to xmit URB ... -ENOENT
+```
+
+Interpretation:
+
+```text
+-71 = EPROTO
+```
+
+This is a USB/`gs_usb` transport failure below SocketCAN. It is not, by itself, evidence of incorrect stable CAN naming, wrong 1 Mbit/s bitrate, a ROS-domain mismatch, or CAN bus-off.
+
+Verified recovery:
+
+1. Stop `dual_arm_observe.launch.py`.
+2. Stop both `piper_single_ctrl` processes.
+3. Inspect kernel messages:
+
+```bash
+sudo journalctl -k --since "10 minutes ago" --no-pager |
+grep -Ei 'gs_usb|Error -71|Couldn.t start device|failed to xmit URB'
+```
+
+4. If `ip link set ... type can` or `ip link set ... up` returns `Protocol error`, stop retrying.
+5. Unplug the affected USB-CAN adapter for 5–10 seconds.
+6. Reconnect it to the same labeled USB port.
+7. Configure 1 Mbit/s without `restart-ms`.
+8. Verify raw traffic before launching ROS:
+
+```bash
+timeout 5s candump -n 10 can_left
+timeout 5s candump -n 10 can_right
+```
+
+9. Require `UP`, `ERROR-ACTIVE`, live RX packets, and no new errors or drops.
+10. Source ROS and use `ROS_DOMAIN_ID=88` before launching observation nodes.
+
+The adapter may receive a different temporary numeric interface index after reconnecting. The stable name and USB serial mapping remain authoritative.
+
+In the verified incident, `can_left` immediately resumed normal Piper frames after physical re-enumeration. Both observation nodes then ran with sustained RX traffic and 13 clean startup-query transmissions per bus.
 
 ## Verified CAN health
 
@@ -1253,118 +1350,118 @@ This caused an early camera GUI startup failure and was corrected.
 Completed for the current observation and RGB-only data path:
 
 - camera serial mapping;
-- individual camera validation;
-- simultaneous three-camera validation;
-- camera GUI;
-- camera MCAP recording;
+- individual and simultaneous three-camera validation;
+- camera GUI and camera-only MCAP recording;
 - persistent left and right CAN mapping;
-- passive CAN health validation;
 - observation-only dual-arm launch;
 - command and enable endpoint isolation;
 - approximately 200 Hz arm feedback validation;
-- arm status GUI;
-- arm MCAP recording;
-- camera and arm GUI entrypoints under `gui/`.
+- arm status GUI and arm-only MCAP recording;
+- human-facing camera, arm, and unified data-collection launchers under `gui/`;
+- automatic data-collection readiness checks;
+- synchronized camera-and-arm MCAP recording;
+- episode metadata and validation sidecars;
+- episode browsing and review;
+- outcome, disposition, and review-note editing;
+- playback isolated under `/laundry_butler/viewer/*`;
+- reversible delete-to-trash;
+- schemas, stage vocabulary, and episode-store tests.
+
+Verified July 31, 2026:
+
+- both USB-CAN adapters recovered from a transient `gs_usb` USB failure;
+- both interfaces were `UP`, `ERROR-ACTIVE`, and at 1 Mbit/s;
+- both interfaces had sustained RX traffic with no new errors or drops;
+- both Piper observation nodes and required arm topics were present under `ROS_DOMAIN_ID=88`.
 
 Not completed:
 
-- synchronized camera-and-arm episode recording;
-- unified data-collection interface;
-- episode browser;
-- synchronized playback;
-- human annotation interface;
+- automatic handling of a camera or arm stream that drops during active recording;
+- timeline seek/scrub and synchronized timestamp cursor;
+- per-topic dropout markers;
+- stage-boundary and excluded-range editing;
+- filtered export/manifests;
 - dataset conversion from the new recorder;
 - teleoperation validation under the rebuilt system;
 - commanded motion under the rebuilt system;
-- replay;
+- replay-to-robot;
 - inference;
 - final training-topic schema validation.
 
-
 ## Current next safe step
 
-Build and validate a unified data-collection workflow.
+Diagnose runtime stream disappearance before adding more collection features.
 
-Before implementing the complete episode browser, record one synchronized MCAP under:
+For any camera or arm signal drop, capture:
 
-```text
-ROS_DOMAIN_ID=88
-```
+- subsystem launch logs;
+- ROS graph changes;
+- topic-rate changes;
+- kernel USB reset or disconnect messages;
+- CAN state and counter deltas;
+- rosbag recorder warnings;
+- final per-topic MCAP counts and timestamp coverage.
 
-Include:
+After the root cause is known:
 
-```text
-/camera_f/color/image_raw
-/camera_f/color/camera_info
-/camera_l/color/image_raw
-/camera_l/color/camera_info
-/camera_r/color/image_raw
-/camera_r/color/camera_info
+1. add a recording watchdog;
+2. mark affected time intervals;
+3. prevent an automatic `usable` disposition until review;
+4. add timeline seek/scrub and dropout markers;
+5. add stage boundaries and excluded ranges;
+6. add filtered export without modifying source episodes.
 
-/puppet/joint_left
-/puppet/joint_right
-/puppet/end_pose_left
-/puppet/end_pose_right
-/piper_left_ctrl_node/arm_status
-/piper_right_ctrl_node/arm_status
-```
+Do not add motion, enable, reset, homing, replay-to-robot, or inference controls.
 
-Validate:
+## Unified data-collection UI status
 
-- all expected topics are present;
-- camera image rates remain near 30 fps;
-- arm topics remain near 200 Hz;
-- timestamps overlap for the complete episode;
-- transport losses remain acceptable;
-- camera and arm node launches remain unique;
-- arm command isolation remains verified;
-- sufficient disk space exists.
-
-
-## Unified data-collection UI goal
-
-Create a human-facing launcher:
+Tracked launcher:
 
 ```text
 gui/run_data_collection_gui.sh
 ```
 
-Recommended implementation layout:
+Tracked implementation:
 
 ```text
-data_collection/
-├── data_collection_gui.py
-├── episode_store.py
-├── episode_player.py
-├── annotation_store.py
-├── validation.py
-└── schemas/
-    ├── episode.schema.json
-    └── annotations.schema.json
+data_collection/data_collection_gui.py
+data_collection/episode_store.py
+data_collection/preflight.py
+data_collection/validation.py
+data_collection/stage_vocabulary.json
+data_collection/schemas/
 ```
 
-The first data-collection UI should:
+Implemented Stage 2 behavior:
 
-1. Start and stop camera nodes.
-2. Start and stop observation-only arm nodes.
-3. Refuse duplicate subsystem launches.
-4. Run a preflight check.
-5. Verify camera topics.
-6. Verify arm topics.
-7. Verify CAN state.
-8. Verify arm command isolation.
-9. Check available storage.
-10. Record one immutable MCAP per episode.
-11. Write episode metadata.
-12. Generate a validation report after recording.
-13. List previously recorded episodes.
-14. Open an episode without modifying its source MCAP.
-15. Play synchronized front, left, and right images.
-16. Display synchronized arm state beside playback.
-17. Allow human annotation.
-18. Allow excluded or unusable time ranges.
-19. Preserve a schema compatible with future automatic annotation.
+- responsive vertical and horizontal splitters;
+- saved geometry and splitter positions;
+- scalable bold monospace UI;
+- three camera previews;
+- left/right arm joint, pose, status, rate, and liveness display;
+- start-or-attach behavior for camera and arm subsystems;
+- duplicate-launch refusal;
+- automatic readiness checks;
+- synchronized MCAP recording;
+- episode metadata and validation sidecars;
+- outcomes: not assessed, success, partial, failure;
+- dispositions: usable, needs review, unusable;
+- editable review notes;
+- playback isolated under `/laundry_butler/viewer/*`;
+- pause/resume, stop, and playback-rate controls;
+- reversible delete-to-trash.
 
+Readiness checks remain required, but the user does not need to press a manual preflight button for every episode. Run checks automatically at startup, after subsystem launch, and immediately before recording when the previous result is missing or stale.
+
+The operator field was removed because one workstation/team currently performs collection and the field added friction without resolving a real ambiguity.
+
+Output root selection:
+
+```text
+LAUNDRY_BUTLER_DATA_ROOT
+```
+
+Keep production episode output outside Git.
 
 ## Episode storage contract
 
@@ -1413,7 +1510,6 @@ episode_id
 created_at
 task
 garment_type
-operator
 initial_state_level
 instruction
 notes
@@ -1515,51 +1611,40 @@ Preserve:
 This allows future stage-aware reward modeling or automatic subtask segmentation to consume the same episode data without mutating raw demonstrations.
 
 
-## Data-collection UI implementation order
+## Data-collection implementation status and next order
 
-Recommended staged implementation:
+Completed:
 
-### Stage 1 — synchronized recorder
+- synchronized recorder;
+- automatic readiness checks;
+- `episode.json` and `validation.json`;
+- episode browser;
+- outcome, disposition, and review-note editing;
+- synchronized viewer playback controls;
+- reversible delete-to-trash.
 
-- launch or attach to cameras and arms;
-- run preflight;
-- start one MCAP;
-- stop safely;
-- write `episode.json`;
-- generate `validation.json`.
+Next order:
 
-### Stage 2 — episode browser
+### Runtime reliability
 
-- list episodes;
-- show metadata;
-- show validation result;
-- open episode directory;
-- mark episode usable or unusable.
+- diagnose camera and arm stream disappearance;
+- record per-topic liveness and dropout intervals;
+- block automatic `usable` disposition after an unreviewed dropout.
 
-### Stage 3 — playback
+### Timeline review
 
-- synchronized three-camera playback;
-- timeline;
-- current ROS-relative time;
-- current arm joint and pose state.
+- seek/scrub control;
+- synchronized timestamp cursor;
+- per-topic dropout markers;
+- stage boundaries and excluded ranges;
+- versioned `annotations.json`.
 
-### Stage 4 — human annotation
+### Export
 
-- success and quality fields;
-- notes;
-- stage boundaries;
-- excluded ranges;
-- save versioned sidecar.
-
-### Stage 5 — export
-
-- produce manifests for dataset conversion;
-- exclude unusable ranges;
-- preserve provenance;
-- do not alter source MCAPs.
-
-Do not attempt all stages in one large unvalidated implementation.
-
+- filter by validation, outcome, and disposition;
+- preserve episode provenance;
+- exclude `.trash`;
+- never modify source MCAPs.
 
 ## Visualization policy
 
@@ -1693,6 +1778,14 @@ GUI sample
 
 Do not confuse GUI callback or render rates with MCAP recording rates.
 
+### `gs_usb` USB protocol error
+
+Symptoms include `RTNETLINK ... Protocol error`, kernel error `-71`, timestamp-read failure, or `Couldn't start device`.
+
+Do not keep retrying SocketCAN or relaunching ROS.
+
+Stop Piper processes, physically reconnect only the affected USB-CAN adapter to the same labeled port, configure 1 Mbit/s, and require live `candump` frames before restarting ROS.
+
 ### CAN parser whitespace
 
 The `ip -statistics` header contains variable whitespace.
@@ -1712,14 +1805,13 @@ Ask whether a suggested change has already been implemented locally before diagn
 
 ## Immediate next task
 
-Do not add motion controls.
-
 Proceed with:
 
-1. one synchronized camera-and-arm recording test;
-2. validation of topic counts and timestamp overlap;
-3. the first unified recorder;
-4. episode metadata and validation sidecars;
-5. episode browsing;
-6. human annotation;
-7. future automatic annotation and SARM support.
+1. runtime signal-drop diagnosis;
+2. a recording watchdog with dropout intervals;
+3. timeline seek/scrub and synchronized cursors;
+4. stage boundaries and excluded ranges;
+5. filtered export/manifests;
+6. dataset conversion validation.
+
+Do not add motion, enable, reset, homing, replay-to-robot, or inference controls.

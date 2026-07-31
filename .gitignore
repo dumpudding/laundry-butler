@@ -68,14 +68,10 @@ models/
 .DS_Store
 /logs/
 
-# Camera capture runtime output
+# Generated subsystem and data-collection output
 /arms/output/
-
-# Generated GUI output
 /cameras/output/
+/data_collection/output/
 
-# Python cache
-/cameras/__pycache__/
-/arms/__pycache__/
-/cameras/*.pyc
-/arms/*.pyc
+# Orbbec SDK may create this in the current working directory
+/Log/

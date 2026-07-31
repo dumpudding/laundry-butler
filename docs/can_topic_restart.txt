@@ -1,0 +1,33 @@
+eg: 
+
+
+sudo ip link set can_left down
+sudo ip link set can_left type can bitrate 1000000
+sudo ip link set can_left up
+
+vise versa
+
+## Verified `gs_usb` USB transport lock-up — 2026-07-31
+
+Symptoms:
+
+```text
+RTNETLINK answers: Protocol error
+Error -71 while reading timestamp
+Couldn't start device (err=-71)
+failed to xmit URB ... -ENOENT
+```
+
+This is a USB protocol/transport failure below SocketCAN. A normal `ip link` reset may fail even though the CAN interface name still exists.
+
+Recovery:
+
+1. Stop the Piper launch and both `piper_single_ctrl` processes.
+2. Inspect recent `gs_usb` kernel messages.
+3. Unplug the affected USB-CAN adapter for 5–10 seconds.
+4. Reconnect it to the same labeled USB port.
+5. Configure 1 Mbit/s without `restart-ms`.
+6. Verify `UP`, `ERROR-ACTIVE`, and live `candump` frames.
+7. Restart ROS only after raw CAN traffic is healthy.
+
+The adapters on this host do not support `restart-ms`; physical USB re-enumeration is the verified recovery for error `-71`.

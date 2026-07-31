@@ -1,0 +1,139 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laundry-butler.local/schemas/annotations.schema.json",
+  "title": "Laundry Butler Episode Annotations",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "episode_id",
+    "segments",
+    "excluded_ranges"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "string"
+    },
+    "episode_id": {
+      "type": "string"
+    },
+    "overall_success": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "failure_reason": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "demonstration_quality": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        null,
+        "good",
+        "acceptable",
+        "poor",
+        "unusable"
+      ]
+    },
+    "operator_notes": {
+      "type": "string"
+    },
+    "annotator": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "modified_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "segment_id",
+          "start_time_seconds",
+          "end_time_seconds",
+          "label",
+          "source"
+        ],
+        "properties": {
+          "segment_id": {
+            "type": "string"
+          },
+          "start_time_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "end_time_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "notes": {
+            "type": "string"
+          },
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "human",
+              "automatic",
+              "imported"
+            ]
+          }
+        },
+        "additionalProperties": true
+      }
+    },
+    "excluded_ranges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "start_time_seconds",
+          "end_time_seconds",
+          "reason"
+        ],
+        "properties": {
+          "start_time_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "end_time_seconds": {
+            "type": "number",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "name": "default_shirt_folding_stages",
+  "labels": [
+    "grasp sleeve and shirt edge",
+    "fold shirt over one third horizontally",
+    "grasp inner folded edge",
+    "fold shirt horizontally in half",
+    "grasp left edge of shirt",
+    "fold shirt in half vertically",
+    "back away from folded shirt"
+  ],
+  "allow_free_form": true
+}

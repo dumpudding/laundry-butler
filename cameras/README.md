@@ -37,7 +37,7 @@ The launcher sources:
 
 ```text
 /opt/ros/jazzy/setup.bash
-/home/laundrybutler/laundry-butler/cameras/camera_ws/install/setup.bash
+/home/laundrybutler/camera_ws/install/setup.bash
 ```
 
 It defaults to:
@@ -150,6 +150,6 @@ This directory is ignored by Git.
 
 ## Scope
 
-This camera interface is a subsystem diagnostic and recording tool.
+This camera interface is a subsystem diagnostic and camera-only recording tool.
 
-The upcoming unified data-collection interface will record synchronized camera and arm topics into one episode and will provide episode browsing, playback, validation, and annotation.
+The unified data-collection interface now records synchronized camera and observation-only arm topics into one episode. Use this camera interface for camera diagnostics, snapshots, and isolated camera recordings.

@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://laundry-butler.local/schemas/episode.schema.json",
+  "title": "Laundry Butler Episode Metadata",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "episode_id",
+    "created_at",
+    "status",
+    "task",
+    "instruction",
+    "ros_domain_id",
+    "recorded_topics"
+  ],
+  "properties": {
+    "schema_version": {"type": "string"},
+    "episode_id": {"type": "string", "pattern": "^episode_"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "last_edited_at": {"type": "string", "format": "date-time"},
+    "status": {"type": "string"},
+    "source_mcap_immutable": {"const": true},
+    "task": {"type": "string", "minLength": 1},
+    "garment_type": {"type": ["string", "null"]},
+    "operator": {
+      "description": "Legacy field retained for old episodes; no longer collected by the UI.",
+      "type": "string"
+    },
+    "initial_state_level": {"type": "string"},
+    "instruction": {"type": "string", "minLength": 1},
+    "notes": {"type": "string"},
+    "outcome": {
+      "type": "string",
+      "enum": ["not_assessed", "success", "partial", "failure"]
+    },
+    "ros_domain_id": {"type": "integer"},
+    "camera_mapping": {"type": "object"},
+    "arm_mapping": {"type": "object"},
+    "recorded_topics": {
+      "type": "array",
+      "items": {"type": "string"},
+      "uniqueItems": true
+    },
+    "recording_start": {"type": "string", "format": "date-time"},
+    "recording_end": {"type": "string", "format": "date-time"},
+    "duration_seconds": {"type": "number", "minimum": 0},
+    "software_revision": {"type": ["string", "null"]},
+    "operator_disposition": {
+      "type": "string",
+      "enum": ["usable", "needs_review", "unusable"]
+    },
+    "recorder_exit_code": {"type": "integer"}
+  },
+  "additionalProperties": true
+}

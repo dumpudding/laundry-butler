@@ -12,15 +12,18 @@ Laundry-folding research on a bimanual Piper platform using vision-language-acti
 - The dual-arm observation launch runs both Piper nodes with `auto_enable=false` and isolates all position, joint, and enable endpoints.
 - The arm GUI shows CAN health, command-isolation status, joint and gripper feedback, end poses, arm status, and MCAP controls.
 - A 3.125-second arm MCAP captured all six selected arm topics at approximately 200 Hz.
-- No commanded arm movement, replay, or inference has been performed under the rebuilt setup.
-- The next workstream is a unified data-collection interface with episode recording, browsing, playback, validation, and human annotations.
+- The Stage 2 data-collection GUI can launch or attach to cameras and arms, run automatic readiness checks, record synchronized episodes, write metadata and validation sidecars, browse and review episodes, play recordings under an isolated viewer namespace, and move episodes reversibly to `.trash`.
+- A July 31 USB-CAN failure was traced to a transient `gs_usb` USB transport state (`-71` / `EPROTO`). Physically reconnecting the affected adapter restored normal CAN traffic.
+- No commanded arm movement, replay-to-robot, or inference has been performed under the rebuilt setup.
+- Current work is runtime signal-drop diagnosis, recording-watchdog behavior, timeline review, and export.
 
 ## Repository layout
 
 ```text
 gui/
 ├── run_camera_capture_gui.sh
-└── run_arm_status_gui.sh
+├── run_arm_status_gui.sh
+└── run_data_collection_gui.sh
 
 cameras/
 ├── camera_capture_gui.py
@@ -34,8 +37,22 @@ arms/
 ├── README.md
 └── output/                       # Generated; ignored by Git
 
+data_collection/
+├── data_collection_gui.py
+├── episode_store.py
+├── preflight.py
+├── validation.py
+├── stage_vocabulary.json
+├── schemas/
+└── README.md
+
 docs/
-└── for_llms.txt
+├── for_llms.txt
+├── can_topic_restart.txt
+└── data_collection_ui_plan.md
+
+tests/
+└── test_episode_store.py
 ```
 
 ## Start the interfaces
@@ -54,13 +71,20 @@ cd /home/laundrybutler/laundry-butler
 ./gui/run_arm_status_gui.sh
 ```
 
-Both interfaces default to:
+### Unified data-collection interface
+
+```bash
+cd /home/laundrybutler/laundry-butler
+./gui/run_data_collection_gui.sh
+```
+
+All three interfaces default to:
 
 ```text
 ROS_DOMAIN_ID=88
 ```
 
-The camera and arm GUIs currently record their subsystems separately. The upcoming data-collection interface will own synchronized full-episode recording.
+The camera and arm GUIs remain useful for subsystem diagnostics and isolated recordings. Use the unified data-collection interface for synchronized full-episode recording and review.
 
 ## Camera subsystem
 
@@ -145,6 +169,30 @@ The arm GUI intentionally contains no enable, reset, stop, joint-command, Cartes
 
 See [`arms/README.md`](arms/README.md) for usage and safety constraints.
 
+### USB-CAN recovery
+
+A CAN interface may remain visible while its `gs_usb` adapter is stuck at the USB transport layer.
+
+Recognized symptoms:
+
+```text
+RTNETLINK answers: Protocol error
+Error -71 while reading timestamp
+Couldn't start device (err=-71)
+failed to xmit URB ... -ENOENT
+```
+
+When this occurs:
+
+1. Stop `dual_arm_observe.launch.py` and both `piper_single_ctrl` processes.
+2. Inspect recent kernel messages with `journalctl -k`.
+3. If CAN reconfiguration still returns `Protocol error`, unplug the affected USB-CAN adapter for 5–10 seconds.
+4. Reconnect it to the same labeled USB port.
+5. Reconfigure it at 1 Mbit/s.
+6. Confirm `UP`, `ERROR-ACTIVE`, and live frames with `candump` before restarting ROS.
+
+Do not repeatedly relaunch ROS while raw CAN traffic is absent. Do not use `restart-ms`; these adapters do not support automatic bus-off restart.
+
 ## Safety
 
 The manufacturer workflow and pinned factory source are the sources of truth.
@@ -165,31 +213,35 @@ Before replay or inference:
 - Verify units, joint order, gripper representation, limits, command rate, CAN identity, and start pose.
 - Keep the emergency stop accessible.
 
-## Data-collection roadmap
+## Unified data collection
 
-The unified data-collection interface should treat one episode as:
+Run:
 
-```text
-Immutable MCAP
-+ episode metadata
-+ annotation sidecar
-+ validation report
+```bash
+cd /home/laundrybutler/laundry-butler
+./gui/run_data_collection_gui.sh
 ```
 
-Initial functions:
+The Stage 2 interface currently provides:
 
-- Start and stop camera and observation-only arm nodes.
-- Run preflight checks before recording.
-- Record all required camera and arm topics into one episode.
-- Assign an episode ID, task, garment, operator, initial-state level, and notes.
-- Browse recorded episodes without modifying their MCAP files.
-- Play synchronized front, left, and right camera streams.
-- Display arm state alongside playback.
-- Mark success, failure reason, demonstration quality, and excluded ranges.
-- Create and edit timestamped natural-language task stages.
-- Validate topic presence, duration, message counts, rates, and timestamp coverage.
+- start or attach behavior for the three camera nodes and two observation-only Piper nodes;
+- duplicate-launch refusal;
+- automatic readiness checks at startup, after subsystem launch, and before recording when results are stale;
+- camera previews and live left/right arm state;
+- synchronized MCAP recording;
+- immutable source MCAPs with editable metadata and validation sidecars;
+- outcome values: not assessed, success, partial, and failure;
+- dispositions: usable, needs review, and unusable;
+- editable review notes;
+- playback isolated under `/laundry_butler/viewer/*`;
+- pause, resume, stop, and playback-rate controls;
+- reversible deletion by moving complete episode directories to `.trash`.
 
-Recommended episode layout:
+The operator field was removed because it added friction without resolving a current ambiguity.
+
+Episode output is controlled by `LAUNDRY_BUTLER_DATA_ROOT`. Large episode data must remain outside Git.
+
+Episode layout:
 
 ```text
 episode_<id>/
@@ -202,7 +254,14 @@ episode_<id>/
 └── recorder.log
 ```
 
-MCAP files remain immutable. Human and future automatic annotations are stored in editable, versioned sidecar files.
+MCAP files remain immutable. Human and future automatic annotations belong in editable, versioned sidecars.
+
+Remaining work:
+
+- diagnose camera or arm streams that disappear during active recording;
+- add a watchdog that records dropout intervals and prevents automatic `usable` disposition;
+- add timeline seeking, synchronized cursors, dropout markers, stage boundaries, and excluded ranges;
+- export filtered manifests without modifying source episodes or including `.trash`.
 
 ## Repository boundaries
 
@@ -215,12 +274,14 @@ Add to Git:
 - Schemas and manifests
 - Small evaluation metadata
 
+- Tests
 Do not add to Git:
 
 - `/home/laundrybutler/piper_ws`
 - `/home/laundrybutler/camera_ws`
 - `cameras/output/`
 - `arms/output/`
+- `data_collection/output/`
 - Raw MCAP recordings
 - Snapshots, videos, datasets, or converted training data
 - ROS workspace `build/`, `install/`, or `log/`

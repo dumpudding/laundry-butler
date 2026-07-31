@@ -227,3 +227,50 @@ The factory Cartesian gripper callback contains a likely unit-clamping issue and
 This arm interface remains a subsystem diagnostic and observation-recording tool.
 
 The upcoming unified data-collection interface will record synchronized camera and arm topics into one episode and will provide episode browsing, playback, validation, and human annotation.
+
+## USB-CAN adapter recovery
+
+A CAN interface can remain visible while its `gs_usb` USB-CAN adapter is stuck below SocketCAN.
+
+Verified failure signatures:
+
+```text
+RTNETLINK answers: Protocol error
+Error -71 while reading timestamp
+Couldn't start device (err=-71)
+failed to xmit URB ... -ENOENT
+```
+
+Error `-71` is `EPROTO`: a USB protocol/transport failure. It is not, by itself, evidence of incorrect CAN naming, wrong bitrate, ROS-domain mismatch, or CAN bus-off.
+
+Recovery:
+
+```bash
+pkill -INT -f 'dual_arm_observe.launch.py' 2>/dev/null
+pkill -TERM -f 'piper_single_ctrl' 2>/dev/null
+sleep 2
+
+sudo journalctl -k --since "10 minutes ago" --no-pager |
+grep -Ei 'gs_usb|Error -71|Couldn.t start device|failed to xmit URB'
+```
+
+If CAN reconfiguration still returns `Protocol error`:
+
+1. Stop retrying and do not relaunch ROS.
+2. Unplug only the affected USB-CAN adapter.
+3. Wait 5–10 seconds.
+4. Reconnect it to the same labeled USB port.
+5. Configure it at 1 Mbit/s without `restart-ms`.
+6. Require `UP`, `ERROR-ACTIVE`, and live `candump` frames before restarting ROS.
+
+```bash
+sudo ip link set can_left down
+sudo ip link set can_left type can bitrate 1000000
+sudo ip link set can_left txqueuelen 1000
+sudo ip link set can_left up
+timeout 5s candump -n 10 can_left
+```
+
+Repeat with `can_right` when necessary.
+
+The temporary numeric interface index may change after reconnecting. The stable names and adapter serial mappings remain authoritative.
