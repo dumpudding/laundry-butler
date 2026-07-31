@@ -1,11 +1,6 @@
-eg: 
+# CAN and USB-CAN recovery
 
-
-sudo ip link set can_left down
-sudo ip link set can_left type can bitrate 1000000
-sudo ip link set can_left up
-
-vise versa
+This file records the verified recovery procedure for the Piper USB-CAN adapters on the Laundry Butler workstation.
 
 ## Verified `gs_usb` USB transport lock-up — 2026-07-31
 

@@ -226,7 +226,7 @@ The factory Cartesian gripper callback contains a likely unit-clamping issue and
 
 This arm interface remains a subsystem diagnostic and observation-recording tool.
 
-The upcoming unified data-collection interface will record synchronized camera and arm topics into one episode and will provide episode browsing, playback, validation, and human annotation.
+The unified data-collection interface now records synchronized camera and observation-only arm topics into one episode. Use this arm interface for CAN diagnostics, arm observation, and isolated arm recordings.
 
 ## USB-CAN adapter recovery
 

@@ -55,6 +55,12 @@ tests/
 └── test_episode_store.py
 ```
 
+### Legacy tracked directories under review
+
+- `src/laundry_butler/` — legacy package scaffolding retained for review; no current GUI/test references were detected by this audit.
+
+These paths are not removed automatically. Confirm their purpose before deletion.
+
 ## Start the interfaces
 
 ### Camera interface
@@ -249,7 +255,7 @@ episode_<id>/
 │   ├── *.mcap
 │   └── metadata.yaml
 ├── episode.json
-├── annotations.json
+├── annotations.json             # Future; not written by Stage 2
 ├── validation.json
 └── recorder.log
 ```
