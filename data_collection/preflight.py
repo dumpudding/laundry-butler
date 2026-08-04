@@ -142,7 +142,6 @@ def lines(command: list[str], timeout: float = 4.0) -> set[str]:
     return {line.strip() for line in result.stdout.splitlines() if line.strip()}
 
 
-
 def check_dependencies() -> Check:
     missing = [
         executable
@@ -175,6 +174,7 @@ def check_dependencies() -> Check:
         "ROS 2 CLI, CAN tools, and MCAP storage plugin available",
     )
 
+
 def check_nodes() -> Check:
     nodes = lines(["ros2", "node", "list"])
     expected = CAMERA_NODES | ARM_NODES
@@ -197,40 +197,87 @@ def check_topics() -> Check:
             "fail",
             "Missing: " + ", ".join(missing),
         )
-    return Check("Required topics", "pass", f"All {len(REQUIRED_TOPICS)} topics present")
+    return Check(
+        "Required topics", "pass", f"All {len(REQUIRED_TOPICS)} topics present"
+    )
 
 
-def _topic_alive(topic: str) -> tuple[str, bool, str]:
+def _topic_alive(
+    topic: str,
+    timeout_seconds: float = 5.0,
+) -> tuple[str, bool, str]:
     try:
         result = run(
-            ["timeout", "3", "ros2", "topic", "echo", "--once", topic],
-            timeout=4.0,
+            [
+                "timeout",
+                str(timeout_seconds),
+                "ros2",
+                "topic",
+                "echo",
+                topic,
+                "--once",
+                "--qos-reliability",
+                "best_effort",
+                "--qos-durability",
+                "volatile",
+            ],
+            timeout=timeout_seconds + 2.0,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:
         return topic, False, str(exc)
-    return topic, result.returncode == 0, result.stdout.strip()[-160:]
+
+    output = result.stdout.strip()
+
+    if result.returncode == 0:
+        return topic, True, ""
+
+    if result.returncode == 124:
+        detail = f"timed out after {timeout_seconds:.0f} s"
+    else:
+        detail = f"exit code {result.returncode}"
+
+    if output:
+        detail += ": " + output[-200:]
+
+    return topic, False, detail
 
 
 def check_topic_liveness() -> Check:
-    failures: list[str] = []
-    with concurrent.futures.ThreadPoolExecutor(
-        max_workers=len(LIGHTWEIGHT_LIVENESS_TOPICS)
-    ) as executor:
-        futures = [
-            executor.submit(_topic_alive, topic)
+    results: dict[str, tuple[bool, str]] = {}
+
+    # Avoid launching seven DDS participants simultaneously.
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(_topic_alive, topic, 5.0): topic
             for topic in LIGHTWEIGHT_LIVENESS_TOPICS
-        ]
+        }
+
         for future in concurrent.futures.as_completed(futures):
-            topic, alive, _detail = future.result()
-            if not alive:
-                failures.append(topic)
+            topic, alive, detail = future.result()
+            results[topic] = (alive, detail)
+
+    # Retry failures sequentially to eliminate transient discovery races.
+    for topic, (alive, _detail) in list(results.items()):
+        if alive:
+            continue
+
+        _, retry_alive, retry_detail = _topic_alive(topic, 5.0)
+        results[topic] = (retry_alive, retry_detail)
+
+    failures = {
+        topic: detail for topic, (alive, detail) in results.items() if not alive
+    }
 
     if failures:
+        failure_text = "; ".join(
+            f"{topic}: {detail}" for topic, detail in sorted(failures.items())
+        )
         return Check(
             "Topic liveness",
             "fail",
-            "No sample within 3 s: " + ", ".join(sorted(failures)),
+            "No sample received: " + failure_text,
         )
+
     return Check(
         "Topic liveness",
         "pass",
