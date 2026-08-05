@@ -1,158 +1,101 @@
-# laundry-butler
+# Laundry Butler
 
-**Work in progress**
+Laundry Butler is a bimanual shirt-folding system using two AgileX Piper
+arms, three RGB cameras, ROS 2 Jazzy, and OpenPI pi0.5.
 
-Laundry-folding research on a bimanual Piper platform using vision-language-action and reinforcement-learning methods.
+The current target is reliable folding of one known shirt from a mostly
+consistent spread starting configuration.
 
 ## Current status
 
-- Three Orbbec Dabai DC1 RGB cameras are mapped by serial number and validated individually and simultaneously near 30 FPS.
-- The camera GUI can launch the RGB camera nodes, show three previews, record selected camera topics to MCAP, and save snapshots.
-- Stable `can_left` and `can_right` identities are configured at 1 Mbit/s.
-- The dual-arm observation launch runs both Piper nodes with `auto_enable=false` and isolates all position, joint, and enable endpoints.
-- The arm GUI shows CAN health, command-isolation status, joint and gripper feedback, end poses, arm status, and MCAP controls.
-- A 3.125-second arm MCAP captured all six selected arm topics at approximately 200 Hz.
-- The Stage 2 data-collection GUI can launch or attach to cameras and arms, run automatic readiness checks, record synchronized episodes, write metadata and validation sidecars, browse and review episodes, play recordings under an isolated viewer namespace, and move episodes reversibly to `.trash`.
-- A July 31 USB-CAN failure was traced to a transient `gs_usb` USB transport state (`-71` / `EPROTO`). Physically reconnecting the affected adapter restored normal CAN traffic.
-- No commanded arm movement, replay-to-robot, or inference has been performed under the rebuilt setup.
-- Current work is runtime signal-drop diagnosis, recording-watchdog behavior, timeline review, and export.
+Implemented:
 
-## Repository layout
+- synchronized three-camera and dual-arm MCAP recording;
+- live camera, joint, end-pose, arm-status, rate, and liveness views;
+- automatic readiness checks before recording;
+- per-episode metadata and validation reports;
+- isolated synchronized playback;
+- episode review, disposition, outcome, and notes;
+- safe GUI deletion by moving episodes to `.trash`.
 
-```text
-gui/
-├── run_camera_capture_gui.sh
-├── run_arm_status_gui.sh
-└── run_data_collection_gui.sh
+Current training direction:
 
-cameras/
-├── camera_capture_gui.py
-├── multi_camera_rgb.launch.py
-├── README.md
-└── output/                       # Generated; ignored by Git
+- official OpenPI pi0.5;
+- full fine-tuning;
+- no LoRA;
+- no frozen components;
+- absolute 14D joint data in LeRobot;
+- OpenPI relative actions for 12 arm joints;
+- absolute left and right grippers;
+- no Cartesian-relative actions;
+- 30 Hz action grid;
+- 50 predicted actions;
+- initially execute 20 actions before replanning;
+- global batch size 32 on eight A800 GPUs.
 
-arms/
-├── arm_status_gui.py
-├── dual_arm_observe.launch.py
-├── README.md
-└── output/                       # Generated; ignored by Git
+See [`docs/for_llms.txt`](docs/for_llms.txt) for the authoritative data,
+training, inference, and failure-point decisions.
 
-data_collection/
-├── data_collection_gui.py
-├── episode_store.py
-├── preflight.py
-├── validation.py
-├── stage_vocabulary.json
-├── schemas/
-└── README.md
-
-docs/
-├── for_llms.txt
-├── can_topic_restart.txt
-└── data_collection_ui_plan.md
-
-tests/
-└── test_episode_store.py
-```
-
-### Legacy tracked directories under review
-
-- `src/laundry_butler/` — legacy package scaffolding retained for review; no current GUI/test references were detected by this audit.
-
-These paths are not removed automatically. Confirm their purpose before deletion.
-
-## Start the interfaces
-
-### Camera interface
-
-```bash
-cd /home/laundrybutler/laundry-butler
-./gui/run_camera_capture_gui.sh
-```
-
-### Arm observation interface
-
-```bash
-cd /home/laundrybutler/laundry-butler
-./gui/run_arm_status_gui.sh
-```
-
-### Unified data-collection interface
+## Run the data-collection GUI
 
 ```bash
 cd /home/laundrybutler/laundry-butler
 ./gui/run_data_collection_gui.sh
 ```
 
-All three interfaces default to:
+The launcher sources ROS 2 Jazzy, the camera workspace, and the Piper
+workspace. The default domain is:
 
 ```text
 ROS_DOMAIN_ID=88
 ```
 
-The camera and arm GUIs remain useful for subsystem diagnostics and isolated recordings. Use the unified data-collection interface for synchronized full-episode recording and review.
+Required packages:
 
-## Camera subsystem
-
-The local Orbbec vendor workspace is outside this repository:
-
-```text
-/home/laundrybutler/camera_ws
+```bash
+sudo apt install python3-pyqt5 ros-jazzy-rosbag2-storage-mcap
 ```
 
-Tracked launch file:
+## Recording workflow
+
+1. Put both arms in the required reset pose.
+2. Close both grippers manually.
+3. Keep the labeled left/right USB and CAN connections unchanged.
+4. Keep the emergency stop accessible.
+5. Start or attach to the cameras and observation-only arm nodes.
+6. Confirm all camera and arm streams are live.
+7. Use initial state `level_1_spread`.
+8. Use the instruction `Fold the shirt.`
+9. Start the episode; readiness is checked automatically.
+10. Stop and mark the episode usable or unusable.
+11. Review the episode through isolated playback.
+
+Before recording more demonstrations, adjust or lock wrist-camera
+exposure and verify both left and right arm topics.
+
+## Recorded data
+
+Each episode contains one MCAP and two metadata sidecars:
 
 ```text
-cameras/multi_camera_rgb.launch.py
+episode_<timestamp>_<task>/
+├── bag/
+│   ├── *.mcap
+│   └── metadata.yaml
+├── episode.json
+├── validation.json
+└── recorder.log
 ```
 
-| Role | ROS namespace | Serial |
-|---|---|---|
-| Front/top | `camera_f` | `CC1WC52009R` |
-| Left wrist | `camera_l` | `CC1WC52006V` |
-| Right wrist | `camera_r` | `CC1WC52012P` |
-
-Current stream configuration:
+Recorded topics:
 
 ```text
-640 × 480
-30 FPS
-MJPG
-RGB only
-```
-
-Camera roles are selected by serial number. Do not persist `/dev/videoN` device names.
-
-See [`cameras/README.md`](cameras/README.md) for camera GUI usage and validation details.
-
-## Arm subsystem
-
-The local Piper vendor workspace is outside this repository:
-
-```text
-/home/laundrybutler/piper_ws
-```
-
-Pinned factory-source commit:
-
-```text
-e38e0c62319140116ab176a9d1d3c4b51aa6401e
-```
-
-Tracked observation launch:
-
-```text
-arms/dual_arm_observe.launch.py
-```
-
-| Interface | Adapter serial | Physical role |
-|---|---|---|
-| `can_left` | `0029001C4148570D20343133` | LARM |
-| `can_right` | `003200184148570A20343133` | RARM |
-
-The arm interface records these topics by default:
-
-```text
+/camera_f/color/image_raw
+/camera_f/color/camera_info
+/camera_l/color/image_raw
+/camera_l/color/camera_info
+/camera_r/color/image_raw
+/camera_r/color/camera_info
 /puppet/joint_left
 /puppet/joint_right
 /puppet/end_pose_left
@@ -161,135 +104,79 @@ The arm interface records these topics by default:
 /piper_right_ctrl_node/arm_status
 ```
 
-`/puppet/joint_*` contains six arm joints followed by gripper feedback:
+`/master/joint_left` and `/master/joint_right` are intentionally excluded.
+
+The current external dataset root is:
 
 ```text
-position[0:6]   Six arm joints in radians
-position[6]     Gripper feedback in metres
-effort[6]       Scaled gripper effort feedback
+/home/laundrybutler/Aloha Shared SSD/dxx_data/0727_300eps
 ```
 
-`/master/joint_*` represents command-state feedback and is not used as measured physical state.
+Raw MCAPs and training data are not stored in Git.
 
-The arm GUI intentionally contains no enable, reset, stop, joint-command, Cartesian-command, gripper-command, replay, or inference controls.
+## Joint format
 
-See [`arms/README.md`](arms/README.md) for usage and safety constraints.
-
-### USB-CAN recovery
-
-A CAN interface may remain visible while its `gs_usb` adapter is stuck at the USB transport layer.
-
-Recognized symptoms:
+The physical state and action representation is 14D:
 
 ```text
-RTNETLINK answers: Protocol error
-Error -71 while reading timestamp
-Couldn't start device (err=-71)
-failed to xmit URB ... -ENOENT
+[left joint0..5, left gripper,
+ right joint0..5, right gripper]
 ```
 
-When this occurs:
+Arm joints are radians. Grippers are measured openings in metres.
 
-1. Stop `dual_arm_observe.launch.py` and both `piper_single_ctrl` processes.
-2. Inspect recent kernel messages with `journalctl -k`.
-3. If CAN reconfiguration still returns `Protocol error`, unplug the affected USB-CAN adapter for 5–10 seconds.
-4. Reconnect it to the same labeled USB port.
-5. Reconfigure it at 1 Mbit/s.
-6. Confirm `UP`, `ERROR-ACTIVE`, and live frames with `candump` before restarting ROS.
+LeRobot stores absolute state and action values. OpenPI converts only the
+12 arm joints to actions relative to the current state and converts them
+back to absolute targets during inference.
 
-Do not repeatedly relaunch ROS while raw CAN traffic is absent. Do not use `restart-ms`; these adapters do not support automatic bus-off restart.
+Do not use the previous Cartesian-relative pipeline.
 
-## Safety
+## Readiness and validation
 
-The manufacturer workflow and pinned factory source are the sources of truth.
+Readiness checks:
 
-Before powering or observing the arms:
+- ROS 2, CAN utilities, and MCAP support;
+- expected camera and arm nodes;
+- all required recording topics;
+- receipt of fresh camera and arm samples;
+- `can_left` and `can_right` state and bitrate;
+- command-topic isolation;
+- available storage.
 
-- Place both arms in the required horizontal/reset pose.
-- Manually close both grippers.
-- Preserve the labeled USB and CAN connections.
-- Keep the emergency stop accessible.
+A topic being listed in rosbag metadata does not prove that messages were
+recorded. Validation must check nonzero message counts and rates.
 
-`auto_enable=false` prevents automatic startup enable, but it does not remove the factory command and enable endpoints. The project launch remaps those endpoints, and the GUI verifies their isolation before recording.
+## Playback isolation
 
-Before replay or inference:
-
-- Physically disconnect or otherwise isolate both master-arm power plugs.
-- Verify command topics and subscribers.
-- Verify units, joint order, gripper representation, limits, command rate, CAN identity, and start pose.
-- Keep the emergency stop accessible.
-
-## Unified data collection
-
-Run:
-
-```bash
-cd /home/laundrybutler/laundry-butler
-./gui/run_data_collection_gui.sh
-```
-
-The Stage 2 interface currently provides:
-
-- start or attach behavior for the three camera nodes and two observation-only Piper nodes;
-- duplicate-launch refusal;
-- automatic readiness checks at startup, after subsystem launch, and before recording when results are stale;
-- camera previews and live left/right arm state;
-- synchronized MCAP recording;
-- immutable source MCAPs with editable metadata and validation sidecars;
-- outcome values: not assessed, success, partial, and failure;
-- dispositions: usable, needs review, and unusable;
-- editable review notes;
-- playback isolated under `/laundry_butler/viewer/*`;
-- pause, resume, stop, and playback-rate controls;
-- reversible deletion by moving complete episode directories to `.trash`.
-
-The operator field was removed because it added friction without resolving a current ambiguity.
-
-Episode output is controlled by `LAUNDRY_BUTLER_DATA_ROOT`. Large episode data must remain outside Git.
-
-Episode layout:
+Playback remaps recorded topics under:
 
 ```text
-episode_<id>/
-├── bag/
-│   ├── *.mcap
-│   └── metadata.yaml
-├── episode.json
-├── annotations.json             # Future; not written by Stage 2
-├── validation.json
-└── recorder.log
+/laundry_butler/viewer/<original-topic>
 ```
 
-MCAP files remain immutable. Human and future automatic annotations belong in editable, versioned sidecars.
+Playback is observation-only and does not publish to live robot command
+topics.
 
-Remaining work:
+## Not implemented
 
-- diagnose camera or arm streams that disappear during active recording;
-- add a watchdog that records dropout intervals and prevents automatic `usable` disposition;
-- add timeline seeking, synchronized cursors, dropout markers, stage boundaries, and excluded ranges;
-- export filtered manifests without modifying source episodes or including `.trash`.
+- timeline seeking;
+- stage annotation;
+- excluded time ranges;
+- automatic recovery from a stream dropping during recording;
+- dataset conversion through the GUI;
+- robot replay;
+- policy inference;
+- homing, reset, enable, or motion controls.
 
-## Repository boundaries
+## Repository policy
 
-Add to Git:
+Do not commit:
 
-- Application source
-- ROS launch wrappers
-- Human-facing GUI launchers
-- Documentation
-- Schemas and manifests
-- Small evaluation metadata
-
-- Tests
-Do not add to Git:
-
-- `/home/laundrybutler/piper_ws`
-- `/home/laundrybutler/camera_ws`
-- `cameras/output/`
-- `arms/output/`
-- `data_collection/output/`
-- Raw MCAP recordings
-- Snapshots, videos, datasets, or converted training data
-- ROS workspace `build/`, `install/`, or `log/`
-- Model weights or checkpoints
-- Host-specific CAN, udev, or systemd configuration
+- raw MCAP files;
+- converted datasets;
+- checkpoints;
+- training outputs;
+- caches;
+- ROS `build/`, `install/`, or `log/` directories;
+- local workspaces;
+- secrets or machine credentials.

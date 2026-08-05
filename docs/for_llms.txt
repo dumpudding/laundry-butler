@@ -1,1817 +1,385 @@
-# LAUNDRY BUTLER — EXTERNAL MEMORY FOR AI AGENTS
+LAUNDRY BUTLER — AUTHORITATIVE CONTEXT FOR LLMS
+Updated: 2026-08-05
 
-Updated: 2026-07-31
 ## Purpose
 
-This file records stable project paths, verified hardware mappings, safety rules, successful methods, and recurring failure points for future ChatGPT, Claude, Codex, or other agents working on Laundry Butler.
-
-Update this file when:
-
-- a stable path or hardware mapping is established;
-- a method succeeds and should be repeated;
-- an unexpected failure reveals a reusable lesson;
-- a safety assumption is confirmed or disproven;
-- a project milestone changes the correct next step.
-
-Do not fill this file with:
-
-- transient terminal output;
-- unverified guesses;
-- temporary process IDs;
-- entire logs;
-- information already available clearly in source code unless it prevents a recurring mistake.
-
-The public repository may be inspected at any time, but it represents the latest committed state and may lag behind local workstation changes.
-
-When a proposed fix is not visible on GitHub and the user reports an error, ask whether the fix has already been applied locally before assuming the repository reflects the active code.
-
-
-## Critical paths
-
-Main Git repository:
-
-```text
-/home/laundrybutler/laundry-butler
-```
-
-Public repository:
-
-```text
-https://github.com/dumpudding/laundry-butler
-```
-
-Piper vendor workspace:
-
-```text
-/home/laundrybutler/piper_ws
-```
-
-Camera vendor workspace:
-
-```text
-/home/laundrybutler/camera_ws
-```
-
-Human-facing GUI entrypoints:
-
-```text
-/home/laundrybutler/laundry-butler/gui/run_camera_capture_gui.sh
-/home/laundrybutler/laundry-butler/gui/run_arm_status_gui.sh
-/home/laundrybutler/laundry-butler/gui/run_data_collection_gui.sh
-```
-
-Camera subsystem:
-
-```text
-/home/laundrybutler/laundry-butler/cameras/camera_capture_gui.py
-/home/laundrybutler/laundry-butler/cameras/multi_camera_rgb.launch.py
-/home/laundrybutler/laundry-butler/cameras/README.md
-```
-
-Generated camera output:
-
-```text
-/home/laundrybutler/laundry-butler/cameras/output
-```
-
-Arm subsystem:
-
-```text
-/home/laundrybutler/laundry-butler/arms/arm_status_gui.py
-/home/laundrybutler/laundry-butler/arms/dual_arm_observe.launch.py
-/home/laundrybutler/laundry-butler/arms/README.md
-```
-
-Generated arm output:
-
-```text
-/home/laundrybutler/laundry-butler/arms/output
-```
-
-Original AgileX factory computer:
-
-```text
-SSH: agilex@agilex.local
-```
-
-Authoritative factory Piper source:
-
-```text
-/home/agilex/piper_ros
-```
-
-Authoritative factory camera source:
-
-```text
-/home/agilex/camera_ros/src/OrbbecSDK_ROS2
-```
-
-Shared large-artifact root:
-
-```text
-/srv/aloha-shared
-```
-
-Never inspect or modify:
-
-```text
-/home/ubuntu/TableTop
-```
-
-
-## Repository layout
-
-Current intended tracked layout:
-
-```text
-gui/
-├── run_camera_capture_gui.sh
-├── run_arm_status_gui.sh
-└── run_data_collection_gui.sh
-
-cameras/
-├── camera_capture_gui.py
-├── multi_camera_rgb.launch.py
-└── README.md
-
-arms/
-├── arm_status_gui.py
-├── dual_arm_observe.launch.py
-└── README.md
-
-data_collection/
-├── data_collection_gui.py
-├── episode_store.py
-├── preflight.py
-├── validation.py
-├── stage_vocabulary.json
-├── schemas/
-└── README.md
-
-docs/
-├── for_llms.txt
-├── can_topic_restart.txt
-└── data_collection_ui_plan.md
-
-tests/
-└── test_episode_store.py
-```
-
-Subsystem implementation and ROS launch files belong with their subsystem:
-
-```text
-cameras/
-arms/
-data_collection/
-```
-
-Human-facing scripts belong in:
-
-```text
-gui/
-```
-
-Do not recreate a generic root `launch/` directory unless the repository architecture changes deliberately.
-
-## Git boundaries
-
-Add to Git:
-
-- application source;
-- tracked ROS launch wrappers;
-- human-facing GUI launcher scripts;
-- documentation;
-- subsystem README files;
-- configuration templates without host-specific secrets;
-- schemas and manifests;
-- annotation vocabularies;
-- small evaluation metadata;
-- tests;
-- this file.
-
-Do not add to Git:
-
-- `/home/laundrybutler/piper_ws`;
-- `/home/laundrybutler/camera_ws`;
-- `cameras/output/`;
-- `arms/output/`;
-- `data_collection/output/`;
-- production data-collection episode output;
-- ROS workspace `build/`, `install/`, or `log/`;
-- raw MCAP recordings;
-- snapshots, videos, or datasets;
-- converted training datasets;
-- model weights or checkpoints;
-- Conda environments and caches;
-- machine-specific systemd, udev, or CAN configuration;
-- large generated files;
-- terminal logs.
-
-Raw MCAP recordings are immutable.
-
-Human or automatic annotations must be stored in versioned sidecar files rather than written back into the MCAP.
-
-Cleanup must always be reviewed and explicitly approved.
-
-Never autonomously delete:
-
-- scripts;
-- datasets;
-- checkpoints;
-- recordings;
-- annotations;
-- validation reports;
-- generated episode output.
-
-The user does not want backup or patch-version files such as:
-
-```text
-*.before_fix
-*.backup
-*.old
-```
-
-Overwrite tracked source files directly after validating the intended edit.
-
-
-## Data-collection subsystem paths
-
-Tracked implementation:
-
-```text
-/home/laundrybutler/laundry-butler/data_collection/data_collection_gui.py
-/home/laundrybutler/laundry-butler/data_collection/episode_store.py
-/home/laundrybutler/laundry-butler/data_collection/preflight.py
-/home/laundrybutler/laundry-butler/data_collection/validation.py
-/home/laundrybutler/laundry-butler/data_collection/README.md
-```
-
-Human-facing launcher:
-
-```text
-/home/laundrybutler/laundry-butler/gui/run_data_collection_gui.sh
-```
-
-Generated local fallback output:
-
-```text
-/home/laundrybutler/laundry-butler/data_collection/output
-```
-
-Production episode roots are selected with:
-
-```text
-LAUNDRY_BUTLER_DATA_ROOT
-```
-
-## Source hierarchy
-
-For Piper and COBOT Magic behavior, use this priority:
-
-1. COBOT Magic manufacturer manual for physical setup and safety.
-2. Original AgileX factory ROS 2 scripts and README for the exact startup workflow.
-3. Factory source code for topics, units, callbacks, services, and CAN behavior.
-4. Locally validated project wrappers and documentation.
-5. Old project scripts only as historical reference.
-
-Do not mix:
-
-- the newer two-arm CAN architecture;
-- the older four-CAN `remote_control` architecture;
-- ROS 1 Noetic commands;
-- the customized ROS 2 Jazzy installation.
-
-Verify local source before copying commands.
-
-
-## General execution methods
-
-Prefer:
-
-- short, idempotent Python edits with assertions;
-- exact method extraction;
-- AST inspection;
-- narrowly targeted `grep`;
-- validation with `python3 -m py_compile`;
-- validation with `bash -n`;
-- `git diff --check`;
-- explicit review before staging.
-
-Avoid:
-
-- broad recursive filesystem searches;
-- printing large overlapping source ranges;
-- long interactive heredocs that can become duplicated or interleaved;
-- continuing after an earlier command failed;
-- assuming a pasted terminal escape sequence is part of the real command.
-
-When creating or modifying files, always state:
-
-```text
-Add to Git
-```
-
-or:
-
-```text
-Do not add to Git
-```
-
-Temporary scripts must be clearly labeled temporary and deleted after use.
-
-
-## Piper vendor workspace
-
-The factory Piper repository was cloned directly over LAN from:
-
-```text
-agilex@agilex.local:/home/agilex/piper_ros
-```
-
-Local path:
-
-```text
-/home/laundrybutler/piper_ws
-```
-
-Pinned detached commit:
-
-```text
-e38e0c62319140116ab176a9d1d3c4b51aa6401e
-```
-
-Push to the vendor origin is disabled.
-
-The sparse checkout includes source and root scripts but excludes tracked vendor build, install, and log directories.
-
-Successful build command:
-
-```bash
-source /opt/ros/jazzy/setup.bash
-cd /home/laundrybutler/piper_ws
-
-colcon build --symlink-install \
-    --packages-select piper_msgs piper_description piper
-```
-
-All three packages build successfully under:
-
-```text
-ROS 2 Jazzy
-Python 3.12
-```
-
-Only verified functional executable:
-
-```text
-piper_single_ctrl
-```
-
-Registered but stale entrypoints whose Python modules are absent:
-
-```text
-piper_ms_ctrl
-piper_read_master
-```
-
-Do not run the stale entrypoints.
-
-
-## Piper SDK
-
-Original AgileX computer:
-
-```text
-Piper SDK 0.5.0
-Python 3.10
-/home/agilex/.local/lib/python3.10/site-packages/piper_sdk
-```
-
-New workstation:
-
-```text
-Piper SDK 0.6.1
-Python 3.12
-/usr/lib/python3/dist-packages/piper_sdk
-```
-
-Every SDK API used by the factory ROS node exists with compatible signatures in SDK 0.6.1.
-
-Python 3.12 prints invalid-escape `SyntaxWarning` messages from Piper SDK docstrings.
-
-These warnings are nonfatal.
-
-
-## Verified arm CAN mapping
-
-The physical USB-A ports are labeled:
-
-```text
-LARM
-RARM
-```
-
-Preserve these labels and do not move either adapter to another USB port without revalidating the mapping.
-
-Stable mapping:
-
-```text
-can_left
-  serial: 0029001C4148570D20343133
-  current USB path: 3-7:1.0
-  physical role: LARM
-
-can_right
-  serial: 003200184148570A20343133
-  current USB path: 3-11.2:1.0
-  physical role: RARM
-```
-
-Persistent host-specific interface naming:
-
-```text
-/etc/systemd/network/10-piper-can-left.link
-/etc/systemd/network/11-piper-can-right.link
-```
-
-These system files must not be added to Git.
-
-Do not infer arm roles from temporary kernel names such as:
-
-```text
-can0
-can1
-```
-
-
-## CAN configuration
-
-Both Piper arm buses use:
-
-```text
-bitrate: 1000000
-txqueuelen: 1000
-```
-
-Working configuration:
-
-```bash
-sudo ip link set can_left down
-sudo ip link set can_left type can bitrate 1000000
-sudo ip link set can_left txqueuelen 1000
-sudo ip link set can_left up
-
-sudo ip link set can_right down
-sudo ip link set can_right type can bitrate 1000000
-sudo ip link set can_right txqueuelen 1000
-sudo ip link set can_right up
-```
-
-Inspect each interface separately:
-
-```bash
-ip -brief link show dev can_left
-ip -brief link show dev can_right
-```
-
-This command is invalid:
-
-```bash
-ip -brief link show can_left can_right
-```
-
-`ip link show` accepts one named device at a time in that form.
-
-Do not use `restart-ms` on this host.
-
-The `gs_usb` candleLight adapters report:
-
-```text
-Device doesn't support restart from Bus Off.
-```
-
-Do not run the copied factory `can_config.sh`; its USB paths belong to the original AgileX computer.
-
-
-## USB-CAN `gs_usb` transport recovery
-
-A Linux CAN interface may remain present while the USB-CAN adapter behind it is stuck.
-
-Verified July 31, 2026 symptoms:
-
-```text
-RTNETLINK answers: Protocol error
-usb ... Error -71 while reading timestamp
-gs_usb ... Couldn't start device (err=-71)
-gs_usb ... failed to xmit URB ... -ENOENT
-```
-
-Interpretation:
-
-```text
--71 = EPROTO
-```
-
-This is a USB/`gs_usb` transport failure below SocketCAN. It is not, by itself, evidence of incorrect stable CAN naming, wrong 1 Mbit/s bitrate, a ROS-domain mismatch, or CAN bus-off.
-
-Verified recovery:
-
-1. Stop `dual_arm_observe.launch.py`.
-2. Stop both `piper_single_ctrl` processes.
-3. Inspect kernel messages:
-
-```bash
-sudo journalctl -k --since "10 minutes ago" --no-pager |
-grep -Ei 'gs_usb|Error -71|Couldn.t start device|failed to xmit URB'
-```
-
-4. If `ip link set ... type can` or `ip link set ... up` returns `Protocol error`, stop retrying.
-5. Unplug the affected USB-CAN adapter for 5–10 seconds.
-6. Reconnect it to the same labeled USB port.
-7. Configure 1 Mbit/s without `restart-ms`.
-8. Verify raw traffic before launching ROS:
-
-```bash
-timeout 5s candump -n 10 can_left
-timeout 5s candump -n 10 can_right
-```
-
-9. Require `UP`, `ERROR-ACTIVE`, live RX packets, and no new errors or drops.
-10. Source ROS and use `ROS_DOMAIN_ID=88` before launching observation nodes.
-
-The adapter may receive a different temporary numeric interface index after reconnecting. The stable name and USB serial mapping remain authoritative.
-
-In the verified incident, `can_left` immediately resumed normal Piper frames after physical re-enumeration. Both observation nodes then ran with sustained RX traffic and 13 clean startup-query transmissions per bus.
-
-## Verified CAN health
-
-Both interfaces were verified:
-
-```text
-UP
-LOWER_UP
-ERROR-ACTIVE
-bitrate 1000000
-txqueuelen 1000
-```
-
-No active:
-
-- RX errors;
-- TX errors;
-- warning state;
-- passive state;
-- bus-off events.
-
-Large historical cumulative `rx_dropped` values exist.
-
-Do not diagnose an active CAN transport failure from the absolute cumulative value.
-
-Use counter deltas over a test interval.
-
-During validated five-second observation intervals:
-
-```text
-rx_packets increased
-rx_dropped delta remained 0
-rx_errors remained 0
-tx_errors remained 0
-```
-
-The arm GUI should display the RX dropped delta, not treat the cumulative total alone as a current failure.
-
-
-## Factory dual-arm launch behavior
-
-Factory launch:
-
-```text
-start_two_piper.launch.py
-```
-
-Factory defaults:
-
-```text
-can_left_port := can_left
-can_right_port := can_right
-auto_enable := true
-rviz_ctrl_flag := false
-girpper_exist := true
-```
-
-The factory launch only remaps:
-
-```text
-pos_cmd
-joint_ctrl_single
-```
-
-Each `piper_single_ctrl` node also creates:
-
-```text
-enable_flag subscription
-enable_srv service
-```
-
-Therefore, the factory launch is not observation-only.
-
-The factory node constructor immediately:
-
-- creates `C_PiperInterface`;
-- calls `ConnectPort()`;
-- creates control subscriptions;
-- creates the enable subscription;
-- creates the enable service;
-- starts its publishing thread.
-
-`auto_enable=false` prevents the automatic enable loop but does not make the node receive-only.
-
-`ConnectPort()` calls `PiperInit()`.
-
-`PiperInit()` sends query frames only:
-
-- six motor angle and speed queries using CAN ID `0x472`;
-- six motor acceleration-limit queries using CAN ID `0x472`;
-- one firmware-version query using CAN ID `0x4AF`.
-
-These 13 frames are non-motion queries.
-
-They do not call:
-
-```text
-EnableArm
-MotionCtrl
-JointCtrl
-EndPoseCtrl
-GripperCtrl
-```
-
-
-## Piper safety rules
-
-Before powering or observing the arms:
-
-- place both arms in the required horizontal/reset pose;
-- manually close both grippers;
-- preserve all labeled USB and CAN connections;
-- keep the emergency stop immediately accessible.
-
-Before replay or inference:
-
-- physically disconnect or otherwise isolate both master-arm power plugs;
-- verify the intended command topic and subscriber;
-- verify message type;
-- verify units;
-- verify joint ordering;
-- verify gripper representation;
-- verify limits;
-- verify command rate;
-- verify CAN mapping;
-- verify the start pose;
-- keep the emergency stop accessible.
-
-In replay or inference mode:
-
-```text
-/master/joint_*
-/puppet/joint_*
-```
-
-are feedback topics, not command topics.
-
-Do not describe an existing Cartesian return script as safe from arbitrary configurations.
-
-There is no validated local MoveIt 2 collision-planning setup.
-
-
-## Observation-only arm launch
-
-Tracked launch file:
-
-```text
-/home/laundrybutler/laundry-butler/arms/dual_arm_observe.launch.py
-```
-
-The project launch:
-
-- uses `can_left` and `can_right`;
-- sets `auto_enable=false`;
-- sets `rviz_ctrl_flag=false`;
-- keeps `girpper_exist=true`;
-- remaps all known command and enable surfaces.
-
-Isolated left endpoints:
-
-```text
-/laundry_butler/observation_only/left/pos_cmd
-/laundry_butler/observation_only/left/joint_ctrl_single
-/laundry_butler/observation_only/left/enable_flag
-/laundry_butler/observation_only/left/enable_srv
-```
-
-Isolated right endpoints:
-
-```text
-/laundry_butler/observation_only/right/pos_cmd
-/laundry_butler/observation_only/right/joint_ctrl_single
-/laundry_butler/observation_only/right/enable_flag
-/laundry_butler/observation_only/right/enable_srv
-```
-
-Do not call the isolated enable services.
-
-
-## Verified arm observation behavior
-
-Both Piper observation nodes ran simultaneously.
-
-Verified:
-
-- `/piper_left_ctrl_node` present;
-- `/piper_right_ctrl_node` present;
-- every isolated position, joint-command, and enable topic had zero publishers;
-- every isolated command topic had its expected subscriber;
-- both isolated enable services were present;
-- default enable services were not exposed;
-- `/puppet/joint_left` published near 200 Hz;
-- `/puppet/joint_right` published near 200 Hz;
-- both arms reported `arm_status=0`;
-- both arms reported `err_code=0`;
-- no joint-angle-limit flags;
-- no joint-communication flags;
-- each CAN interface transmitted exactly 13 startup query frames;
-- no subsequent enable or motion CAN frames were observed;
-- no arm movement occurred during observation startup.
-
-A `ros2 topic hz` command terminated by `timeout` may print:
-
-```text
-failed to initialize wait set: the given context is not valid
-```
-
-This is a ROS CLI shutdown artifact, not a Piper or CAN failure.
-
-
-## Verified arm feedback topics
-
-Measured physical joint feedback:
-
-```text
-/puppet/joint_left
-/puppet/joint_right
-```
-
-Stamped end poses:
-
-```text
-/puppet/end_pose_left
-/puppet/end_pose_right
-```
-
-Arm status:
-
-```text
-/piper_left_ctrl_node/arm_status
-/piper_right_ctrl_node/arm_status
-```
-
-Unstamped duplicate end poses also exist:
-
-```text
-/piper_left_ctrl_node/end_pose
-/piper_right_ctrl_node/end_pose
-```
-
-Prefer the stamped `/puppet/end_pose_*` topics for recording.
-
-Do not record both stamped and unstamped versions by default.
-
-
-## Joint and gripper interpretation
-
-`/puppet/joint_left` and `/puppet/joint_right` use `sensor_msgs/msg/JointState`.
-
-Names:
-
-```text
-joint0
-joint1
-joint2
-joint3
-joint4
-joint5
-joint6
-```
-
-Interpretation:
-
-```text
-position[0:6]  six arm joints in radians
-position[6]    measured gripper feedback in metres
-effort[6]      gripper effort feedback divided by 1000
-```
-
-Factory scaling:
-
-```python
-gripper_position = grippers_angle / 1_000_000
-gripper_effort = grippers_effort / 1000
-```
-
-Small negative gripper positions may appear while physically closed.
-
-Examples observed:
-
-```text
-left:  approximately -0.0023 m
-right: approximately -0.0036 m
-```
-
-Preserve the raw value in recordings.
-
-A GUI may display a separately clamped opening value for readability, but must not alter the recorded data.
-
-
-## Master joint topics
-
-These topics exist:
-
-```text
-/master/joint_left
-/master/joint_right
-```
-
-They are built from commanded control state, including `GetArmGripperCtrl()`.
-
-They are not measured physical arm state.
-
-They remained all zeros while no commands were sent.
-
-Exclude them from the default observation vector and default MCAP recording.
-
-
-## Factory Cartesian gripper concern
-
-The Cartesian position callback contains a likely unit-clamping error.
-
-It first computes:
-
-```python
-gripper = round(pos_data.gripper * 1_000_000)
-```
-
-but then compares the unscaled value:
-
-```python
-if pos_data.gripper > 100000:
-```
-
-This likely intended to compare the scaled `gripper` variable.
-
-This does not affect observation mode.
-
-Audit and correct the behavior before enabling Cartesian gripper commands.
-
-
-## Arm observation GUI
-
-Tracked implementation:
-
-```text
-/home/laundrybutler/laundry-butler/arms/arm_status_gui.py
-```
-
-Human-facing launcher:
-
-```text
-/home/laundrybutler/laundry-butler/gui/run_arm_status_gui.sh
-```
-
-Run:
-
-```bash
-cd /home/laundrybutler/laundry-butler
-./gui/run_arm_status_gui.sh
-```
-
-Default domain:
-
-```text
-ROS_DOMAIN_ID=88
-```
-
-The GUI:
-
-- starts and stops only the arm launch process it created;
-- refuses to start duplicate Piper nodes;
-- displays CAN link state;
-- displays CAN protocol state;
-- displays bitrate;
-- displays traffic counters;
-- displays error counters;
-- displays RX-drop deltas;
-- verifies command isolation;
-- displays six joint positions;
-- displays gripper position and effort;
-- displays stamped end pose;
-- displays Piper arm status;
-- records selected arm observation topics;
-- does not expose enable, reset, stop, homing, motion, replay, or inference controls.
-
-The GUI permits recording only after command isolation is verified.
-
-
-## Arm GUI frame-rate interpretation
-
-The arm GUI’s displayed sample rate measures local Python callback handling.
-
-It is not the authoritative ROS source rate or MCAP recording rate.
-
-The GUI may display approximately:
-
-```text
-40–60 Hz
-```
-
-while MCAP recording preserves approximately:
-
-```text
-200 Hz
-```
-
-Label this value:
-
-```text
-GUI sample
-```
-
-Do not label it simply:
-
-```text
-Feedback
-```
-
-MCAP topic counts are authoritative.
-
-
-## Verified arm GUI MCAP
-
-A short arm-GUI recording was validated.
-
-Duration:
-
-```text
-3.125131 seconds
-```
-
-Counts:
-
-```text
-/puppet/joint_left:                    625
-/puppet/joint_right:                   625
-/puppet/end_pose_left:                 625
-/puppet/end_pose_right:                625
-/piper_left_ctrl_node/arm_status:      626
-/piper_right_ctrl_node/arm_status:     625
-```
-
-Effective rate:
-
-```text
-approximately 200 Hz per selected topic
-```
-
-This validates the arm observation recorder.
-
-
-## Camera hardware mapping
-
-Verified camera roles:
-
-```text
-camera_f / front-top
-  serial: CC1WC52009R
-  current USB depth path: 3-8.4
-
-camera_l / left wrist
-  serial: CC1WC52006V
-  current USB depth path: 3-11.3.4
-
-camera_r / right wrist
-  serial: CC1WC52012P
-  current USB depth path: 3-11.4.4
-```
-
-Do not persist:
-
-```text
-/dev/video0
-/dev/video2
-/dev/video4
-```
-
-or any other numeric `/dev/videoN` identity.
-
-Numeric assignments can change after reconnecting devices or rebooting.
-
-The left and right wrist cameras share part of the USB topology.
-
-Do not infer camera roles from parent hubs or enumeration order.
-
-Select camera roles by serial number.
-
-
-## Camera vendor workspace
-
-Factory source:
-
-```text
-/home/agilex/camera_ros/src/OrbbecSDK_ROS2
-```
-
-Local workspace:
-
-```text
-/home/laundrybutler/camera_ws
-```
-
-Built packages:
-
-```text
-orbbec_camera_msgs
-orbbec_description
-orbbec_camera
-```
-
-Versions:
-
-```text
-Orbbec wrapper: 1.5.15
-Orbbec SDK:     1.10.35
-```
-
-
-## Camera launch
-
-Tracked launch file:
-
-```text
-/home/laundrybutler/laundry-butler/cameras/multi_camera_rgb.launch.py
-```
-
-Current configuration:
-
-```text
-device_num: 3
-RGB: enabled
-resolution: 640x480
-frame rate: 30 fps
-format: MJPG
-depth: disabled
-IR: disabled
-point clouds: disabled
-```
-
-Depth is intentionally excluded from the current OpenPI π0.5 input path.
-
-
-## Verified camera performance
-
-Each camera individually published `camera_info` near:
-
-```text
-29.9 Hz
-```
-
-All three cameras run simultaneously.
-
-Expected topics:
-
-```text
-/camera_f/color/image_raw
-/camera_f/color/camera_info
-/camera_l/color/image_raw
-/camera_l/color/camera_info
-/camera_r/color/image_raw
-/camera_r/color/camera_info
-```
-
-Combined validation recording:
-
-```text
-duration: 9.260303052 seconds
-
-front image:       277
-front camera_info: 277
-
-left image:        277
-left camera_info:  275
-
-right image:       273
-right camera_info: 272
-
-transport losses: 4
-```
-
-Later GUI-created recording:
-
-```text
-duration: 17.332142085 seconds
-
-front image:       505
-front camera_info: 504
-
-left image:        519
-left camera_info:  514
-
-right image:       519
-right camera_info: 505
-
-transport losses: 12
-```
-
-The recordings remained close to 30 fps even when GUI preview rates were much lower.
-
-
-## Camera rate validation method
+Laundry Butler is a bimanual shirt-folding project using two AgileX Piper
+arms, three RGB cameras, ROS 2 Jazzy, and OpenPI pi0.5.
+
+The immediate goal is task-specific performance on one known shirt rather
+than broad garment generalization.
+
+## Current task definition
+
+Input state:
+- one shirt;
+- one size;
+- one material;
+- shirt begins spread on the table;
+- placement is similar between episodes but naturally varies because the
+  demonstrations were recorded on real hardware.
+
+Instruction:
+- use exactly: "Fold the shirt."
+
+Success:
+- the shirt is neatly folded;
+- no exact final table position is required;
+- arm ending positions may vary;
+- both arms should finish lifted away from the shirt.
+
+Dataset exclusions:
+- exclude partial folds;
+- exclude structurally incomplete recordings;
+- exclude episodes marked unusable;
+- do not use a "Level 2 messy shirt" initial state;
+- the only valid initial-state label is "level_1_spread".
+
+## Repository and machine paths
+
+Repository:
+  /home/laundrybutler/laundry-butler
+
+Current raw dataset:
+  /home/laundrybutler/Aloha Shared SSD/dxx_data/0727_300eps
+
+Camera workspace:
+  /home/laundrybutler/camera_ws
+
+Piper workspace:
+  /home/laundrybutler/piper_ws
+
+Default ROS domain:
+  ROS_DOMAIN_ID=88
+
+Raw datasets, MCAP files, converted LeRobot datasets, checkpoints,
+training outputs, caches, and ROS build/install/log directories must not
+be committed to Git.
+
+## Current dataset status
+
+The active dataset audit found:
+- 192 active episode directories before cleanup;
+- one confirmed broken episode;
+- expected remaining active count after deletion: 191.
+
+Confirmed broken episode:
+  episode_20260804_154016_021_shirt-folding
+
+Reason:
+- missing /puppet/joint_left;
+- missing /puppet/end_pose_left;
+- missing /piper_left_ctrl_node/arm_status.
+
+This episode must not be converted or used for training.
+
+Approximately 130 older usable demonstrations were recorded before the
+current dropcloth and lighting setup. They use the same camera angle,
+shirt, procedure, and approximate trajectory, but represent a different
+visual domain.
+
+Do not blindly mix the older-lighting episodes into the first baseline.
+Current plan:
+1. train a baseline using the current standardized visual setup;
+2. retain the older demonstrations as a separately identifiable lighting
+   domain;
+3. compare against a mixed run where older data are deliberately
+   under-sampled rather than dominating training.
+
+## Data recording
+
+The unified GUI records one synchronized ROS 2 MCAP per episode with
+episode and validation sidecars.
+
+Recorded topics:
+
+  /camera_f/color/image_raw
+  /camera_f/color/camera_info
+  /camera_l/color/image_raw
+  /camera_l/color/camera_info
+  /camera_r/color/image_raw
+  /camera_r/color/camera_info
+  /puppet/joint_left
+  /puppet/joint_right
+  /puppet/end_pose_left
+  /puppet/end_pose_right
+  /piper_left_ctrl_node/arm_status
+  /piper_right_ctrl_node/arm_status
 
 Do not use:
 
-```bash
-ros2 topic hz /camera_f/color/image_raw
-```
+  /master/joint_left
+  /master/joint_right
 
-as the primary health test.
+The authoritative training joint data come from:
 
-Python deserialization of large `sensor_msgs/Image` messages can severely under-report the real stream.
+  /puppet/joint_left
+  /puppet/joint_right
+
+Expected recording rates:
+- cameras: approximately 30 Hz;
+- arm state: approximately 200 Hz.
+
+Topic presence in rosbag metadata is not enough. Each required topic must
+have a nonzero message count and adequate rate.
+
+Before future demonstration recording:
+- adjust or lock wrist-camera exposure;
+- verify both left and right joint topics;
+- verify both left and right end-pose topics;
+- verify both arm-status topics;
+- keep the emergency stop accessible.
+
+The wrist cameras currently brighten or overexpose as they approach the
+black shirt. Do not treat this exposure shift as a reliable distance
+signal. It may correlate with distance on this shirt, but it is dependent
+on colour, lighting, and image composition.
+
+## Episode timing
+
+Do not trim the beginning of episodes.
+
+The initial pause is intentional:
+- camera exposure settles;
+- the policy observes the initial shirt configuration;
+- the operator identifies the pinch point before contact.
+
+Do not trim episode endings for the current training round.
+
+The retreat and lifted-away terminal pose are part of the demonstrated
+task. Automated tail trimming may be considered later only if training
+or rollout analysis shows that terminal idle frames cause a clear
+problem.
+
+## Joint representation
+
+The physical robot representation is exactly 14 dimensions:
+
+  0  left joint0, radians
+  1  left joint1, radians
+  2  left joint2, radians
+  3  left joint3, radians
+  4  left joint4, radians
+  5  left joint5, radians
+  6  left gripper opening, metres
+  7  right joint0, radians
+  8  right joint1, radians
+  9  right joint2, radians
+  10 right joint3, radians
+  11 right joint4, radians
+  12 right joint5, radians
+  13 right gripper opening, metres
+
+Each raw JointState message contains:
+
+  [joint0, joint1, joint2, joint3, joint4, joint5, joint6]
+
+joint6 is the measured gripper opening.
+
+The combined ordering is always:
+- left seven values first;
+- right seven values second.
+
+Do not silently reorder arms, interleave joints, change signs, or convert
+gripper units.
+
+## Dataset conversion
 
 Use:
 
-1. `camera_info` cadence;
-2. MCAP per-topic counts divided by duration;
-3. camera launch logs for decode, reconnect, or device failures.
+  raw ROS 2 MCAP
+  -> synchronized LeRobot dataset
+  -> OpenPI
 
-MCAP counts are authoritative for recorded frame rate.
+Do not add an HDF5 intermediate.
 
+The LeRobot dataset must store absolute joint values:
+- observation.state: current absolute 14D robot state;
+- action: future absolute 14D joint targets before OpenPI transforms.
 
-## Camera GUI
+Images:
+- front camera;
+- left wrist camera;
+- right wrist camera.
 
-Tracked implementation:
+Use episode timestamps to align camera and joint streams. Resample the
+training/action grid to 30 Hz rather than storing repeated 200 Hz arm
+samples as policy steps.
 
-```text
-/home/laundrybutler/laundry-butler/cameras/camera_capture_gui.py
-```
+Normalization statistics must be calculated from the selected training
+split only.
 
-Human-facing launcher:
+## OpenPI training decisions
 
-```text
-/home/laundrybutler/laundry-butler/gui/run_camera_capture_gui.sh
-```
+Framework:
+- official OpenPI;
+- pi0.5;
+- JAX training pipeline;
+- full fine-tuning.
 
-Run:
+Do not use:
+- LoRA;
+- frozen model components;
+- Cartesian-relative actions;
+- the previous cartrel dataset or transform;
+- a robot-specific ALOHA adapter without checking its semantics.
 
-```bash
-cd /home/laundrybutler/laundry-butler
-./gui/run_camera_capture_gui.sh
-```
+The previous Cartesian-relative pipeline produced unexplained and
+incorrect behaviour. Do not reintroduce cartrel merely because older
+scripts or datasets still exist.
 
-Default domain:
+Action representation:
+- store absolute 14D actions in LeRobot;
+- enable relative-joint actions inside OpenPI for the 12 arm joints;
+- keep both grippers absolute.
 
-```text
-ROS_DOMAIN_ID=88
-```
+Relative-action mask:
 
-The GUI:
+  indices 0-5:   relative
+  index 6:       absolute gripper
+  indices 7-12:  relative
+  index 13:      absolute gripper
 
-- starts and stops the tracked camera launch;
-- refuses duplicate camera nodes;
-- stops only the launch process it created;
-- displays left, front, and right previews;
-- preserves aspect ratio;
-- allows per-camera recording selection;
-- starts and stops MCAP recording;
-- saves snapshots;
-- organizes output into 30-minute time buckets.
+Conceptually:
 
-Generated output:
+  relative_arm_action =
+      future_absolute_arm_position - current_arm_position
 
-```text
-/home/laundrybutler/laundry-butler/cameras/output
-```
+At inference, OpenPI must convert predicted relative arm actions back to
+absolute joint targets before sending them to Piper.
 
-This directory must remain ignored by Git.
+Do not precompute relative actions in LeRobot and then apply the OpenPI
+relative-action transform again.
 
+Create a Piper-specific OpenPI data/policy configuration. The robot has
+the same physical action dimension as ALOHA, but a 14D shape match does
+not prove that ALOHA-specific joint or gripper adaptation is correct.
 
-## Camera GUI rate interpretation
+## Training scale
 
-The camera GUI displays:
+Training hardware:
+- eight NVIDIA A800 GPUs.
 
-```text
-Stream FPS
-View FPS
-```
+Do not increase batch size simply because eight GPUs are available.
 
-`Stream FPS` comes from lightweight `camera_info` callbacks and reflects camera publication cadence.
+Initial global batch:
+  32
 
-`View FPS` reflects deliberately capped GUI preview rendering.
+Initial distribution:
+  4 samples per GPU across eight GPUs
 
-A low View FPS does not imply a low MCAP rate.
+Increase to 64 only if measurements show a concrete stability or
+throughput benefit.
 
-MCAP topic counts remain authoritative.
+No frozen components.
+No LoRA.
 
+The dataset is highly homogeneous, so evaluate multiple checkpoints
+instead of assuming that the lowest training loss is best.
 
-## Camera launch duplication
+The intent is to train far enough to overfit the target task while
+testing where physical rollout performance peaks.
 
-A second camera launch was accidentally started while the first was still active.
+## Action timing and inference
 
-Symptoms included:
+Training/action frequency:
+  30 Hz
 
-```text
-Publisher already registered for node name
-Device lock is held by another process
-```
+Predicted action horizon:
+  50 steps
 
-Duplicate launches waste resources and can distort preview behavior.
+At 30 Hz:
+  50 steps = approximately 1.67 seconds
 
-Camera launch controls must refuse to start when expected camera nodes already exist.
+Initial execution horizon:
+  execute 20 predicted steps, then replan
 
+Comparison:
+  test executing 30 predicted steps before replanning
 
-## Orbbec nonfatal startup message
+At 30 Hz:
+  20 steps = approximately 0.67 seconds
+  30 steps = approximately 1.00 second
 
-The camera driver may report:
+Do not execute all 50 steps open-loop for the first tests.
 
-```text
-Failed to set 2035 to 1
-```
+No explicit command interpolation or smoothing is required for the first
+rollout.
 
-This occurred on all cameras and was followed immediately by successful stream startup.
+Send the 30 Hz absolute targets produced after the inverse relative-action
+transform, provided the Piper command interface accepts this safely.
+Inspect whether the Piper driver already performs internal interpolation
+before adding another smoothing layer.
 
-Treat it as nonfatal unless accompanied by:
+Smooth appearance is secondary to task success. Do not add smoothing if
+it weakens cloth-contact timing or corrective motion.
 
-- stream failure;
-- decoding failure;
-- repeated reconnection;
-- missing topics;
-- degraded `camera_info` cadence;
-- poor MCAP counts.
+## Evaluation
 
+Initial evaluation uses the same shirt represented in training.
 
-## Orbbec logging behavior
+Evaluate several checkpoints physically. At minimum, compare:
+- an early checkpoint;
+- a middle checkpoint;
+- a later, deliberately overfit checkpoint.
 
-Canonical project runtime log root:
+Record:
+- whether the shirt was neatly folded;
+- failed or missed pinch points;
+- failed grasps;
+- cloth alignment errors;
+- premature stopping;
+- unsafe or out-of-range commands;
+- whether both arms retreat clear of the folded shirt.
 
-```text
-/home/laundrybutler/laundry-butler/logs
-```
+No exact final shirt location or arm pose is required.
 
-Orbbec logs:
+## Safety and inference requirements
 
-```text
-/home/laundrybutler/laundry-butler/logs/orbbec
-```
+Before sending policy outputs:
+- restore relative arm outputs to absolute joint targets;
+- preserve absolute gripper outputs;
+- enforce Piper joint limits;
+- enforce gripper limits;
+- reject NaN or infinite actions;
+- limit unsafe command discontinuities;
+- provide an immediate stop mechanism.
 
-The utility:
+Playback and dataset review must never publish onto live robot command
+topics.
 
-```text
-list_devices_node
-```
+## Known failure points
 
-uses the SDK default configuration and writes:
+1. Cartesian-relative actions previously produced unexplained behaviour.
+   Do not use cartrel for this round.
 
-```text
-./Log
-```
+2. A previous dataset/checkpoint path mixed 16D Cartesian data with a
+   14D robot representation. Confirm 14D semantics, not only tensor
+   shapes.
 
-relative to its current working directory.
+3. A rosbag can contain a topic definition while containing zero messages
+   for that topic. Check message counts.
 
-Run it from a disposable temporary directory:
+4. One confirmed episode recorded only the right arm and was excluded:
+   episode_20260804_154016_021_shirt-folding.
 
-```bash
-tmpdir=$(mktemp -d)
+5. Wrist-camera auto-exposure can hide shirt edges near contact.
 
-(
-    cd "$tmpdir" || exit
-    source /opt/ros/jazzy/setup.bash
-    source /home/laundrybutler/camera_ws/install/setup.bash
-    export ROS_DOMAIN_ID=88
-    timeout 10 ros2 run orbbec_camera list_devices_node
-)
+6. ALOHA and Piper both use 14 physical dimensions, but their adapters
+   must not be assumed interchangeable.
 
-rm -rf "$tmpdir"
-```
+7. The OpenPI source and configuration used on the DGX are authoritative.
+   A stale or extracted OpenPI copy on the recording workstation is not.
 
-Do not allow uppercase `Log/` to accumulate in the repository root.
+## Immediate next steps
 
-
-## ROS setup and Bash nounset
-
-ROS-generated setup scripts are not safe under:
-
-```bash
-set -u
-```
-
-Correct launcher pattern:
-
-```bash
-#!/usr/bin/env bash
-set -eo pipefail
-
-source /opt/ros/jazzy/setup.bash
-source /path/to/vendor_ws/install/setup.bash
-
-set -u
-```
-
-Do not enable nounset before sourcing ROS.
-
-
-## rclpy Node property collision
-
-Do not assign application state to:
-
-```python
-self.subscriptions
-```
-
-`rclpy.node.Node` exposes `subscriptions` as a read-only property.
-
-Use:
-
-```python
-self._subscriptions
-```
-
-This caused an early camera GUI startup failure and was corrected.
-
-
-## Current project state
-
-Completed for the current observation and RGB-only data path:
-
-- camera serial mapping;
-- individual and simultaneous three-camera validation;
-- camera GUI and camera-only MCAP recording;
-- persistent left and right CAN mapping;
-- observation-only dual-arm launch;
-- command and enable endpoint isolation;
-- approximately 200 Hz arm feedback validation;
-- arm status GUI and arm-only MCAP recording;
-- human-facing camera, arm, and unified data-collection launchers under `gui/`;
-- automatic data-collection readiness checks;
-- synchronized camera-and-arm MCAP recording;
-- episode metadata and validation sidecars;
-- episode browsing and review;
-- outcome, disposition, and review-note editing;
-- playback isolated under `/laundry_butler/viewer/*`;
-- reversible delete-to-trash;
-- schemas, stage vocabulary, and episode-store tests.
-
-Verified July 31, 2026:
-
-- both USB-CAN adapters recovered from a transient `gs_usb` USB failure;
-- both interfaces were `UP`, `ERROR-ACTIVE`, and at 1 Mbit/s;
-- both interfaces had sustained RX traffic with no new errors or drops;
-- both Piper observation nodes and required arm topics were present under `ROS_DOMAIN_ID=88`.
-
-Not completed:
-
-- automatic handling of a camera or arm stream that drops during active recording;
-- timeline seek/scrub and synchronized timestamp cursor;
-- per-topic dropout markers;
-- stage-boundary and excluded-range editing;
-- filtered export/manifests;
-- dataset conversion from the new recorder;
-- teleoperation validation under the rebuilt system;
-- commanded motion under the rebuilt system;
-- replay-to-robot;
-- inference;
-- final training-topic schema validation.
-
-## Current next safe step
-
-Diagnose runtime stream disappearance before adding more collection features.
-
-For any camera or arm signal drop, capture:
-
-- subsystem launch logs;
-- ROS graph changes;
-- topic-rate changes;
-- kernel USB reset or disconnect messages;
-- CAN state and counter deltas;
-- rosbag recorder warnings;
-- final per-topic MCAP counts and timestamp coverage.
-
-After the root cause is known:
-
-1. add a recording watchdog;
-2. mark affected time intervals;
-3. prevent an automatic `usable` disposition until review;
-4. add timeline seek/scrub and dropout markers;
-5. add stage boundaries and excluded ranges;
-6. add filtered export without modifying source episodes.
-
-Do not add motion, enable, reset, homing, replay-to-robot, or inference controls.
-
-## Unified data-collection UI status
-
-Tracked launcher:
-
-```text
-gui/run_data_collection_gui.sh
-```
-
-Tracked implementation:
-
-```text
-data_collection/data_collection_gui.py
-data_collection/episode_store.py
-data_collection/preflight.py
-data_collection/validation.py
-data_collection/stage_vocabulary.json
-data_collection/schemas/
-```
-
-Implemented Stage 2 behavior:
-
-- responsive vertical and horizontal splitters;
-- saved geometry and splitter positions;
-- scalable bold monospace UI;
-- three camera previews;
-- left/right arm joint, pose, status, rate, and liveness display;
-- start-or-attach behavior for camera and arm subsystems;
-- duplicate-launch refusal;
-- automatic readiness checks;
-- synchronized MCAP recording;
-- episode metadata and validation sidecars;
-- outcomes: not assessed, success, partial, failure;
-- dispositions: usable, needs review, unusable;
-- editable review notes;
-- playback isolated under `/laundry_butler/viewer/*`;
-- pause/resume, stop, and playback-rate controls;
-- reversible delete-to-trash.
-
-Readiness checks remain required, but the user does not need to press a manual preflight button for every episode. Run checks automatically at startup, after subsystem launch, and immediately before recording when the previous result is missing or stale.
-
-The operator field was removed because one workstation/team currently performs collection and the field added friction without resolving a real ambiguity.
-
-Output root selection:
-
-```text
-LAUNDRY_BUTLER_DATA_ROOT
-```
-
-Keep production episode output outside Git.
-
-## Episode storage contract
-
-Recommended episode structure:
-
-```text
-episode_<id>/
-├── bag/
-│   ├── bag_0.mcap
-│   └── metadata.yaml
-├── episode.json
-├── annotations.json
-├── validation.json
-└── recorder.log
-```
-
-Interpretation:
-
-```text
-bag/
-  immutable ROS recording
-
-episode.json
-  stable episode-level metadata
-
-annotations.json
-  editable human or automatic labels
-
-validation.json
-  generated topic and timing validation results
-
-recorder.log
-  recording process output
-```
-
-Do not modify the MCAP when metadata or annotations change.
-
-
-## Episode metadata
-
-Suggested minimum `episode.json` fields:
-
-```text
-schema_version
-episode_id
-created_at
-task
-garment_type
-initial_state_level
-instruction
-notes
-ros_domain_id
-camera_mapping
-arm_mapping
-recorded_topics
-recording_start
-recording_end
-duration_seconds
-software_revision
-```
-
-Record the current Git commit when practical.
-
-Do not hard-code personal operator information into source code.
-
-
-## Human annotation scope
-
-Initial `annotations.json` fields:
-
-```text
-schema_version
-episode_id
-overall_success
-failure_reason
-demonstration_quality
-operator_notes
-segments
-excluded_ranges
-annotator
-created_at
-modified_at
-```
-
-Each stage segment should contain:
-
-```text
-segment_id
-start_time_seconds
-end_time_seconds
-label
-notes
-confidence
-source
-```
-
-Each excluded range should contain:
-
-```text
-start_time_seconds
-end_time_seconds
-reason
-```
-
-Store times relative to the episode start while preserving enough metadata to map them back to ROS timestamps.
-
-
-## Default shirt-folding stage vocabulary
-
-Current seven-stage vocabulary:
-
-1. grasp sleeve and shirt edge;
-2. fold shirt over one third horizontally;
-3. grasp inner folded edge;
-4. fold shirt horizontally in half;
-5. grasp left edge of shirt;
-6. fold shirt in half vertically;
-7. back away from folded shirt.
-
-Do not hard-code the annotation system so tightly that only these seven labels can exist.
-
-Support:
-
-- a project default vocabulary;
-- free-form natural-language labels;
-- adding new stages;
-- splitting and merging stages;
-- adjusting stage boundaries.
-
-
-## Future automatic annotation and SARM
-
-Human annotation comes first.
-
-Future automatic annotation should write the same sidecar format rather than introduce a second incompatible episode representation.
-
-Preserve:
-
-- natural-language stage labels;
-- temporal stage boundaries;
-- overall success labels;
-- excluded ranges;
-- annotation source;
-- confidence;
-- schema version.
-
-This allows future stage-aware reward modeling or automatic subtask segmentation to consume the same episode data without mutating raw demonstrations.
-
-
-## Data-collection implementation status and next order
-
-Completed:
-
-- synchronized recorder;
-- automatic readiness checks;
-- `episode.json` and `validation.json`;
-- episode browser;
-- outcome, disposition, and review-note editing;
-- synchronized viewer playback controls;
-- reversible delete-to-trash.
-
-Next order:
-
-### Runtime reliability
-
-- diagnose camera and arm stream disappearance;
-- record per-topic liveness and dropout intervals;
-- block automatic `usable` disposition after an unreviewed dropout.
-
-### Timeline review
-
-- seek/scrub control;
-- synchronized timestamp cursor;
-- per-topic dropout markers;
-- stage boundaries and excluded ranges;
-- versioned `annotations.json`.
-
-### Export
-
-- filter by validation, outcome, and disposition;
-- preserve episode provenance;
-- exclude `.trash`;
-- never modify source MCAPs.
-
-## Visualization policy
-
-A custom arm simulator is not currently necessary.
-
-For live or diagnostic visualization, prefer:
-
-```text
-RViz
-piper_description
-live joint-state visualization
-```
-
-Keep visualization optional.
-
-Do not require RViz during:
-
-- data collection;
-- inference;
-- recording validation.
-
-A visual component must not block or materially reduce the camera or arm recording rates.
-
-
-## Known failure patterns
-
-### Broad filesystem searches
-
-Broad `find` commands under user homes can descend into environments, extensions, caches, and unrelated trees.
-
-Use pruned, targeted searches.
-
-### Source-inspection output explosion
-
-Do not print overlapping context around every match.
-
-Use exact method extraction, AST call summaries, or narrow `grep`.
-
-### Long heredoc corruption
-
-Long terminal heredocs can become interleaved, duplicated, or partially pasted.
-
-Prefer small idempotent Python edits with assertions.
-
-### Nested Markdown fences
-
-When giving Markdown that itself contains triple-backtick blocks, wrap the complete response block in four backticks.
-
-### Cascading command failures
-
-If an early command fails, do not continue as though later commands succeeded.
-
-Check the filesystem and process state first.
-
-### Terminal paste artifacts
-
-Characters such as:
-
-```text
-^[[200~
-```
-
-may be terminal bracketed-paste artifacts rather than program failures.
-
-### Gitee authentication
-
-Anonymous cloning of the factory Gitee remote failed with `Unauthorized`.
-
-Direct LAN cloning from the original AgileX computer succeeded.
-
-### Host-specific USB paths
-
-Never copy USB bus paths from the factory computer to the new workstation.
-
-Use stable serial identities.
-
-### `auto_enable=false` assumptions
-
-It prevents the automatic startup enable loop.
-
-It does not remove command subscriptions or the enable service.
-
-### Raw image `ros2 topic hz`
-
-It can under-report real camera rate because the Python subscriber deserializes large image messages.
-
-Use `camera_info` and MCAP counts.
-
-### Duplicate camera launches
-
-Cause duplicate node names, device-lock waits, and unnecessary load.
-
-Refuse duplicates.
-
-### Duplicate arm launches
-
-Refuse to start when either expected Piper node already exists.
-
-Only stop launch processes created by the current GUI.
-
-### Orbbec uppercase `Log`
-
-`list_devices_node` writes `./Log` in its current working directory.
-
-Run it in a temporary directory.
-
-### ROS setup under nounset
-
-Source ROS before enabling `set -u`.
-
-### `self.subscriptions`
-
-It collides with a read-only `rclpy.Node` property.
-
-Use `self._subscriptions`.
-
-### GUI rate labels
-
-Camera:
-
-```text
-Stream FPS
-View FPS
-```
-
-Arm:
-
-```text
-GUI sample
-```
-
-Do not confuse GUI callback or render rates with MCAP recording rates.
-
-### `gs_usb` USB protocol error
-
-Symptoms include `RTNETLINK ... Protocol error`, kernel error `-71`, timestamp-read failure, or `Couldn't start device`.
-
-Do not keep retrying SocketCAN or relaunching ROS.
-
-Stop Piper processes, physically reconnect only the affected USB-CAN adapter to the same labeled port, configure 1 Mbit/s, and require live `candump` frames before restarting ROS.
-
-### CAN parser whitespace
-
-The `ip -statistics` header contains variable whitespace.
-
-Regex patterns must use `\s+` between header fields.
-
-### Cumulative CAN drops
-
-Use deltas, not absolute historical totals.
-
-### GitHub versus local state
-
-The public repository may not include the user’s latest local edits.
-
-Ask whether a suggested change has already been implemented locally before diagnosing based solely on GitHub.
-
-
-## Immediate next task
-
-Proceed with:
-
-1. runtime signal-drop diagnosis;
-2. a recording watchdog with dropout intervals;
-3. timeline seek/scrub and synchronized cursors;
-4. stage boundaries and excluded ranges;
-5. filtered export/manifests;
-6. dataset conversion validation.
-
-Do not add motion, enable, reset, homing, replay-to-robot, or inference controls.
+1. Commit the repository documentation and GUI metadata changes.
+2. Copy the selected raw dataset to the DGX.
+3. Audit the copied dataset against the source.
+4. Create and validate the MCAP-to-LeRobot converter.
+5. Inspect several converted episodes visually and numerically.
+6. Implement a Piper-specific OpenPI configuration.
+7. Compute normalization statistics.
+8. Run a data-loader/model forward-pass test.
+9. Begin full pi0.5 fine-tuning.
+10. Test multiple checkpoints on the physical robot.
