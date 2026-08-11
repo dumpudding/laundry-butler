@@ -75,3 +75,5 @@ models/
 
 # Orbbec SDK may create this in the current working directory
 /Log/
+
+/checkpoints/
