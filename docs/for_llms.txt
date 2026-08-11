@@ -383,3 +383,596 @@ topics.
 8. Run a data-loader/model forward-pass test.
 9. Begin full pi0.5 fine-tuning.
 10. Test multiple checkpoints on the physical robot.
+## Physical inference rollout update — 2026-08-11
+
+Checkpoint 15000 from the full pi0.5 fine-tune has been successfully
+loaded and run end-to-end on the physical dual-Piper system.
+
+Successful checkpoint:
+
+  /home/laundrybutler/laundry-butler/checkpoints/
+  piper_pi05_full_v1/15000
+
+The checkpoint was verified against the DGX source before inference:
+- local size: 42G;
+- DGX size: 42G;
+- local file count: 78;
+- DGX file count: 78;
+- `rsync -ani` produced no differences.
+
+The checkpoint is an OpenPI/Orbax checkpoint containing:
+
+  assets/
+  params/
+  train_state/
+  _CHECKPOINT_METADATA
+
+Its normalization statistics are stored at:
+
+  15000/assets/local/lerobot_168_absjoint_v21/norm_stats.json
+
+
+### Authoritative OpenPI inference configuration
+
+The full-finetune run did not register its Piper config inside upstream
+OpenPI's normal config registry.
+
+Do not expect:
+
+  scripts/serve_policy.py policy:checkpoint \
+      --policy.config=pi05_piper_joint_full
+
+to work directly against a stock OpenPI checkout.
+
+The authoritative Piper config used for training is:
+
+  /home/dgxtest/pi05_implementation/src/pi05_piper/openpi_config.py
+
+Config name:
+
+  pi05_piper_joint_full
+
+Important configuration semantics:
+
+  adapt_to_pi = False
+  use_delta_joint_actions = True
+
+Raw action representation:
+
+  absolute 14-D joint position
+
+Action layout:
+
+  [left joint0..5,
+   left gripper,
+   right joint0..5,
+   right gripper]
+
+The twelve rotary joints are converted to current-state deltas internally
+by OpenPI.
+
+The two grippers remain absolute.
+
+During inference, OpenPI's output transforms restore the rotary-joint
+predictions to absolute joint targets before the robot-side client
+receives them.
+
+Do not manually apply the inverse delta transform a second time.
+
+
+### OpenPI source compatibility
+
+Before loading checkpoint 15000, the important OpenPI files on the
+workstation and DGX were SHA-256 compared.
+
+The following files matched exactly:
+
+  pyproject.toml
+  uv.lock
+  scripts/serve_policy.py
+  src/openpi/policies/policy_config.py
+  src/openpi/training/config.py
+  src/openpi/models/pi0_config.py
+  src/openpi/transforms.py
+
+Workstation OpenPI:
+
+  /home/laundrybutler/Downloads/openpi-main
+
+DGX OpenPI:
+
+  /home/dgxtest/openpi
+
+Therefore this workstation OpenPI checkout is compatible with the
+checkpoint produced by the DGX run.
+
+If these files change in the future, verify compatibility again before
+assuming an old checkpoint can be restored correctly.
+
+
+### Workstation Python environments
+
+OpenPI server environment:
+
+  /home/laundrybutler/Downloads/openpi-main/.venv
+
+It is managed using `uv`.
+
+`uv` was installed using Astral's user-level installer and is available
+under:
+
+  ~/.local/bin
+
+The ROS-side inference client uses a separate Python 3.12 environment:
+
+  /tmp/lb-ros-client
+
+This environment was created with:
+
+  --system-site-packages
+
+so that it can use the system ROS 2 Jazzy Python packages while also
+installing the lightweight OpenPI client package.
+
+The OpenPI client package comes from:
+
+  /home/laundrybutler/Downloads/openpi-main/packages/openpi-client
+
+Do not try to run the full JAX/OpenPI policy server inside the ROS Python
+environment. Keep the policy server and ROS client separated.
+
+
+### GPU permission failure
+
+A checkpoint-load attempt initially failed with:
+
+  CUDA_ERROR_NO_DEVICE
+  No visible GPU devices
+
+The RTX 4090 and NVIDIA driver were actually healthy.
+
+Observed behavior:
+
+  nvidia-smi
+    -> Failed to initialize NVML: Insufficient Permissions
+
+  sudo nvidia-smi
+    -> RTX 4090 visible normally
+
+The NVIDIA device files were owned by:
+
+  root:vglusers
+
+and the `laundrybutler` user was not initially in `vglusers`.
+
+Fix:
+
+  sudo usermod -aG vglusers laundrybutler
+  newgrp vglusers
+
+After this:
+
+  nvidia-smi
+
+worked without sudo and:
+
+  import jax
+  print(jax.devices())
+
+returned:
+
+  [CudaDevice(id=0)]
+
+Do not reinstall CUDA, JAX, or the NVIDIA driver when this exact symptom
+occurs. Check `/dev/nvidia*` permissions and group membership first.
+
+A new login should inherit `vglusers`; existing shells may require
+`newgrp vglusers`.
+
+
+### Checkpoint load validation
+
+Checkpoint 15000 was successfully loaded using the exact Piper
+configuration and:
+
+  openpi.policies.policy_config.create_trained_policy(...)
+
+Successful output included:
+
+  Config constructed: pi05_piper_joint_full
+  POLICY_LOADED
+
+Policy metadata:
+
+  robot: dual_piper
+  raw_action_representation: absolute_joint_position
+  action_layout: left_6j_gripper_right_6j_gripper
+  eef_saved_in_dataset: False
+
+This proves the checkpoint itself can be restored successfully on the
+workstation GPU.
+
+
+### Real-observation inference validation
+
+Before sending any commands to the arms, inference was tested using only:
+- the three real RGB camera streams;
+- the real left arm JointState;
+- the real right arm JointState.
+
+No ROS command publishers existed during this test.
+
+Required observation topics:
+
+  /camera_f/color/image_raw
+  /camera_l/color/image_raw
+  /camera_r/color/image_raw
+  /puppet/joint_left
+  /puppet/joint_right
+
+Required ROS domain:
+
+  ROS_DOMAIN_ID=88
+
+A misleading failure occurred because the parent GUI shell displayed
+ROS_DOMAIN_ID=0.
+
+The GUI launchers set domain 88 inside their child processes; exporting a
+variable inside the launcher does not change the parent terminal.
+
+Always use:
+
+  export ROS_DOMAIN_ID=88
+
+for the separate inference-client terminal.
+
+The first real inference produced:
+
+  action shape: (50, 14)
+  all values finite: True
+
+The first target differed from the measured current joint state by only
+approximately:
+
+  max rotary-joint delta = 0.00258 rad
+
+This confirmed the observation layout, normalization, and inverse
+relative-action transform were behaving consistently before physical
+motion was enabled.
+
+
+### CAN and Piper feedback
+
+SocketCAN being:
+
+  UP / ERROR-ACTIVE
+
+does not prove that a Piper arm is actually communicating.
+
+During setup, `can_left` was UP and ERROR-ACTIVE but had zero received
+frames and the left arm produced no JointState feedback.
+
+Check actual traffic when diagnosing this state:
+
+  timeout 3 candump can_left
+  timeout 3 candump can_right
+
+A healthy Piper CAN interface should produce continuous frames.
+
+The left interface recovered after restoring the physical CAN/USB
+connection and bringing it back up at:
+
+  1000000 bit/s
+
+Do not continue policy rollout unless both:
+
+  /puppet/joint_left
+  /puppet/joint_right
+
+are updating.
+
+
+### Arm enable feedback pause
+
+The first powered rollout aborted immediately after:
+
+  LEFT: ENABLED
+  RIGHT: ENABLED
+
+because the freshness guard treated the temporary feedback pause during
+arm enabling as a failure.
+
+Current behavior must wait for arm/camera feedback to recover after
+enabling before entering the rollout loop.
+
+Expected startup sequence:
+
+  Observations: OK
+  Command subscribers: OK
+  LEFT: ENABLED
+  RIGHT: ENABLED
+  Feedback recovered after enable
+
+Only after this should REPLAN 1 begin.
+
+
+### Current action execution strategy
+
+Earlier guidance in this file says to initially execute only 20 or 30
+actions from each 50-step prediction.
+
+Those were appropriate conservative first-test settings.
+
+Physical testing on 2026-08-11 showed that repeatedly truncating the
+50-step action horizon could cause undesirable behavior resembling:
+
+  forward motion
+  -> replan
+  -> partial backward/reset motion
+  -> forward motion again
+
+The current successful rollout therefore executes the complete model
+horizon:
+
+  predict 50 actions
+  -> publish all 50 actions at 30 Hz
+  -> obtain a fresh observation
+  -> infer another 50 actions
+  -> repeat
+
+At 30 Hz:
+
+  50 actions ~= 1.67 seconds
+
+Current policy inference on the RTX 4090 takes approximately:
+
+  0.09-0.12 seconds
+
+The short inference delay between complete horizons is acceptable.
+
+Do not perform asynchronous inference from an old observation while the
+previous action chunk is still executing unless this behavior is
+explicitly redesigned and tested.
+
+
+### Joint discontinuity handling
+
+Hard-aborting whenever the model produced a moderately large action step
+caused otherwise successful rollouts to stop unnecessarily.
+
+Observed raw maximum joint steps included approximately:
+
+  0.085 rad
+  0.089 rad
+  0.092 rad
+  0.114 rad
+  0.118 rad
+
+Instead of continually raising the abort threshold, the current rollout
+uses a sequential robot-side slew limiter.
+
+Current joint command step limit:
+
+  0.08 rad per 30 Hz policy step
+
+Each new target is limited relative to the previously published smoothed
+target.
+
+Example:
+
+  raw joint step: 0.11805 rad
+  published joint step: 0.08000 rad
+
+This allows the rollout to continue without abruptly publishing the full
+predicted discontinuity.
+
+Continue to hard-abort for:
+- NaN actions;
+- infinite actions;
+- targets outside configured Piper joint limits;
+- actual arm-feedback loss.
+
+The slew limiter is a command-safety layer and must not be confused with
+changing the model's predicted action representation.
+
+
+### Gripper handling
+
+Measured Piper gripper feedback can be slightly negative when the
+physical gripper is closed.
+
+Examples observed during testing were around:
+
+  -0.0027 m
+  -0.0036 m
+
+Do not treat these negative feedback values as meaningful negative
+openings.
+
+Before publishing policy gripper targets, clamp them to:
+
+  [0.0, 0.08] metres
+
+Current gripper command-step limiter:
+
+  0.015 m per policy step
+
+The policy still predicts absolute gripper values.
+
+
+### ROS callback starvation failure
+
+An important apparent "feedback loss" was caused by the rollout client
+rather than by the Piper hardware.
+
+Symptoms:
+
+  left joint age  ~= 0.50 s
+  right joint age ~= 0.50 s
+
+while wrist-camera callbacks also became stale at approximately the same
+time.
+
+The front camera could remain fresh.
+
+The original rollout node:
+- used a MultiThreadedExecutor;
+- left all subscriptions in the default mutually-exclusive callback
+  group;
+- converted every camera image through cv_bridge inside the image
+  callback.
+
+A MultiThreadedExecutor alone does not guarantee parallel execution when
+callbacks are in a mutually-exclusive callback group.
+
+The working implementation now:
+- uses a ReentrantCallbackGroup;
+- assigns camera and joint subscriptions to that group;
+- uses six executor threads;
+- keeps camera callbacks extremely cheap;
+- stores only the latest ROS Image message in the camera callback;
+- performs cv_bridge conversion only when constructing a policy
+  observation for a replan.
+
+After this change, the previous repeated false feedback-loss aborts
+disappeared.
+
+
+### Separate camera and arm freshness requirements
+
+Do not require all camera streams to remain continuously fresh during
+each 30 Hz action publication.
+
+Current logic separates:
+
+  observation_ready()
+
+from:
+
+  arms_fresh()
+
+Before inference, require:
+- front camera fresh;
+- left wrist camera fresh;
+- right wrist camera fresh;
+- left arm state fresh;
+- right arm state fresh.
+
+During execution of an already-generated 50-step action horizon, require
+only:
+- left arm feedback fresh;
+- right arm feedback fresh.
+
+A temporary camera-frame delay should not abort motion that is already
+being executed.
+
+Before the next replan, wait briefly for the complete observation to
+become fresh again.
+
+Actual loss of either arm's feedback must still abort the rollout.
+
+
+### Successful physical rollout
+
+After the above fixes, checkpoint 15000 completed a continuous physical
+rollout without automatic aborts.
+
+Observed successful run:
+
+  31 replans
+  approximately 54 seconds
+  50 actions per replan
+  30 Hz action publication
+  approximately 0.09-0.12 s inference per replan
+
+The operator stopped the rollout manually with Ctrl+C.
+
+Representative output:
+
+  === REPLAN 1 | 0.0s ===
+  inference: 0.106s
+
+  ...
+
+  === REPLAN 31 | 53.8s ===
+  inference: 0.093s
+
+This is the first confirmed full end-to-end physical inference rollout
+of the trained pi0.5 Piper policy on this workstation.
+
+The resulting behavior was qualitatively much better after:
+- executing the complete 50-step horizon;
+- applying the 0.08 rad sequential slew limiter;
+- fixing ROS callback starvation.
+
+
+### Current rollout architecture
+
+Use four logical components:
+
+1. Camera GUI / camera ROS nodes.
+
+2. Arm observation/control nodes.
+
+3. OpenPI policy server on the RTX 4090.
+
+4. Lightweight ROS/OpenPI websocket rollout client.
+
+The policy server and robot client communicate through the OpenPI
+websocket interface.
+
+Keep the heavyweight JAX model separate from the ROS control process.
+
+
+### Remaining minor issue
+
+Ctrl+C currently performs the intended current-position hold, but the
+Python process may subsequently print a ROS shutdown exception such as:
+
+  RCLError:
+  failed to shutdown:
+  rcl_shutdown already called on the given context
+
+Earlier versions also produced:
+
+  cannot use Destroyable because destruction was requested
+
+These occur during process cleanup after motion has already stopped.
+
+They are not currently evidence of inference failure or an unsafe Piper
+command.
+
+The cleanup code should eventually be changed so that:
+- executor shutdown occurs once;
+- the spin thread is joined;
+- nodes are destroyed once;
+- rclpy/context shutdown is called only if it has not already occurred.
+
+Do not confuse this shutdown traceback with a rollout failure.
+
+
+### Current inference safety requirements
+
+For the current known-working physical rollout:
+
+- use checkpoint 15000 unless deliberately evaluating another checkpoint;
+- use the exact Piper OpenPI configuration used during training;
+- use ROS_DOMAIN_ID=88;
+- confirm JAX sees the RTX 4090;
+- confirm both Piper CAN buses receive traffic;
+- confirm both arm JointState topics are live;
+- confirm all three camera topics are live before inference;
+- preserve the 14-D left-first/right-second action ordering;
+- use OpenPI's restored absolute joint targets directly;
+- do not manually invert the relative transform again;
+- clamp grippers to [0.0, 0.08] m;
+- reject NaN and infinite outputs;
+- enforce Piper joint limits;
+- sequentially slew-limit rotary commands to 0.08 rad/step;
+- execute the complete 50-action horizon at 30 Hz;
+- require arm feedback throughout motion;
+- require all camera + arm observations before each replan;
+- keep the physical emergency stop immediately accessible.
+
+Do not remove the hard safety checks simply because checkpoint 15000 has
+produced a successful rollout.
