@@ -1,16 +1,21 @@
-#!/usr/bin/env bash
-set -eo pipefail
+#!/bin/bash
 
-ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-OPENPI_ROOT="${LAUNDRY_BUTLER_OPENPI_ROOT:-/home/laundrybutler/Downloads/openpi-main}"
-VENV="${LAUNDRY_BUTLER_INFERENCE_VENV:-$HOME/.cache/laundry-butler/inference-client}"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+GUI_DIR="$ROOT_DIR/gui"
+INFERENCE_DIR="$ROOT_DIR/inference"
+
+OPENPI_ROOT="/home/laundrybutler/Downloads/openpi-main"
+VENV="$INFERENCE_DIR/.venv-ros-client"
+
+cd "$ROOT_DIR"
 
 source /opt/ros/jazzy/setup.bash
 source /home/laundrybutler/camera_ws/install/setup.bash
 source /home/laundrybutler/piper_ws/install/setup.bash
 
 set -u
-export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-88}"
+
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 
 if ! command -v uv >/dev/null 2>&1; then
     echo "uv is required. Expected ~/.local/bin/uv or another uv on PATH." >&2
@@ -33,4 +38,4 @@ if ! "$VENV/bin/python" -c 'import openpi_client, rclpy, cv_bridge, PyQt5, piper
     uv pip install --python "$VENV/bin/python" -e "$OPENPI_ROOT/packages/openpi-client"
 fi
 
-exec "$VENV/bin/python" "$ROOT_DIR/gui/inference_gui.py"
+exec "$VENV/bin/python" "$INFERENCE_DIR/inference_gui.py"

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 """Laundry Butler real-robot inference GUI.
 
-This GUI deliberately keeps policy serving in a separate process. It provides:
+This GUI manages the policy-server subprocess while keeping JAX/OpenPI isolated from the ROS/PyQt process. It provides:
 - live reduced-rate previews for all three cameras;
 - live left/right joint rate, age, and state monitoring;
 - CAN and policy-server health checks;
 - managed CAN/camera/observation-arm startup controls;
 - one-shot dry inference with no robot publishing;
+- integrated policy-server start/stop controls;
 - guarded full-task rollout using the proven dual-Piper command endpoints;
 - per-replan action/state diagnostics and JSONL logging;
-- observation snapshots for debugging.
 
 The policy output is the physical 14-D absolute representation:
 [left joint0..5, left gripper, right joint0..5, right gripper].
@@ -21,6 +21,7 @@ import json
 import os
 import re
 import signal
+import shlex
 import socket
 import subprocess
 import sys
@@ -43,14 +44,15 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, JointState
 from openpi_client import websocket_client_policy
-from PIL import Image as PILImage
 
 from PyQt5.QtCore import QObject, QSettings, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QCloseEvent, QFont, QFontDatabase, QImage, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
+    QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QFrame,
     QGridLayout,
@@ -78,8 +80,12 @@ from PyQt5.QtWidgets import (
 APP_DIR = Path(__file__).resolve().parent
 REPOSITORY_ROOT = APP_DIR.parent
 LOG_ROOT = REPOSITORY_ROOT / "logs" / "inference"
-SNAPSHOT_ROOT = LOG_ROOT / "snapshots"
 RUNTIME_ROOT = LOG_ROOT / "runtime"
+OPENPI_ROOT = Path(os.environ.get("LAUNDRY_BUTLER_OPENPI_ROOT", "/home/laundrybutler/Downloads/openpi-main")).expanduser()
+POLICY_SERVER_SCRIPT = APP_DIR / "inference_policy_server.py"
+DEFAULT_CHECKPOINT = REPOSITORY_ROOT / "checkpoints" / "piper_pi05_full_v1" / "15000"
+CHECKPOINT_ROOT = REPOSITORY_ROOT / "checkpoints"
+LAST_TRAJECTORY_PATH = LOG_ROOT / "last_inference_trajectory.jsonl"
 
 CAMERA_LAUNCH = Path(
     os.environ.get(
@@ -126,7 +132,7 @@ ARM_NODES = {
     "/piper_right_ctrl_node",
 }
 
-PREVIEW_MAX_FPS = 8.0
+PREVIEW_MAX_FPS = 6.0
 RATE_WINDOW_SECONDS = 2.5
 
 ARM_IDX = np.array([0, 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12], dtype=int)
@@ -160,8 +166,7 @@ class Bridge(QObject):
     rollout_metrics = pyqtSignal(object)
     action_debug = pyqtSignal(object)
     worker_error = pyqtSignal(str, str)
-    server_metadata = pyqtSignal(object)
-    snapshot_saved = pyqtSignal(str)
+    system_health = pyqtSignal(object)
 
 
 def trim(arrivals: deque[float], now: float) -> None:
@@ -317,10 +322,11 @@ class RolloutConfig:
     hard_raw_joint_jump: float = 0.35
     command_speed: int = 30
     gripper_effort: float = 0.5
-    observation_age_limit: float = 1.0
-    arm_age_limit: float = 0.5
-    observation_recovery_seconds: float = 2.0
+    observation_age_limit: float = 1.5
+    arm_age_limit: float = 0.75
+    observation_recovery_seconds: float = 2.5
     feedback_recovery_seconds: float = 5.0
+    feedback_grace_seconds: float = 2.0
     auto_enable: bool = True
 
 
@@ -343,6 +349,94 @@ class JsonlLogger:
         with self._lock:
             with self.path.open("a", encoding="utf-8") as handle:
                 handle.write(text + "\n")
+
+
+class LastTrajectoryWriter:
+    """Persist the latest physical inference command path as absolute 14-D targets."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.handle: Optional[object] = None
+
+    def start(self, start_state: np.ndarray, rate_hz: float) -> None:
+        self.close()
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = self.path.open("w", encoding="utf-8", buffering=1)
+        header = {
+            "type": "trajectory",
+            "version": 1,
+            "created": datetime.now().astimezone().isoformat(),
+            "rate_hz": float(rate_hz),
+            "representation": "absolute_joint_position_14d",
+            "dimensions": DIMENSION_NAMES,
+            "start_state": np.asarray(start_state, dtype=float).tolist(),
+        }
+        self.handle.write(json.dumps(header, separators=(",", ":"), allow_nan=False) + "\n")
+
+    def append(self, target: np.ndarray) -> None:
+        if self.handle is None:
+            raise RuntimeError("Trajectory recorder is not open")
+        record = {
+            "type": "target",
+            "position": np.asarray(target, dtype=float).tolist(),
+        }
+        self.handle.write(json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n")
+
+    def close(self) -> None:
+        if self.handle is not None:
+            try:
+                self.handle.close()
+            finally:
+                self.handle = None
+
+
+def load_last_trajectory(path: Path) -> tuple[np.ndarray, np.ndarray, float]:
+    if not path.is_file():
+        raise RuntimeError(f"No saved inference trajectory: {path}")
+
+    with path.open("r", encoding="utf-8") as handle:
+        lines = [line.strip() for line in handle if line.strip()]
+    if not lines:
+        raise RuntimeError(f"Saved trajectory is empty: {path}")
+
+    header = json.loads(lines[0])
+    if header.get("type") != "trajectory" or int(header.get("version", 0)) != 1:
+        raise RuntimeError("Saved trajectory header is invalid")
+
+    start = np.asarray(header.get("start_state"), dtype=np.float64)
+    if start.shape != (14,) or not np.isfinite(start).all():
+        raise RuntimeError("Saved trajectory start_state is invalid")
+
+    targets = []
+    for line in lines[1:]:
+        record = json.loads(line)
+        if record.get("type") != "target":
+            continue
+        target = np.asarray(record.get("position"), dtype=np.float64)
+        if target.shape != (14,) or not np.isfinite(target).all():
+            raise RuntimeError("Saved trajectory contains an invalid 14-D target")
+        targets.append(target)
+    if not targets:
+        raise RuntimeError("Saved trajectory contains no motion targets")
+
+    rate_hz = float(header.get("rate_hz", 30.0))
+    if not np.isfinite(rate_hz) or rate_hz <= 0.0:
+        rate_hz = 30.0
+    return start, np.asarray(targets, dtype=np.float64), rate_hz
+
+
+def bounded_transition(start: np.ndarray, target: np.ndarray, cfg: RolloutConfig) -> np.ndarray:
+    """Interpolate from the measured pose to a saved endpoint without exceeding slew caps."""
+    start = np.asarray(start, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
+    delta = target - start
+    joint_steps = int(np.ceil(np.max(np.abs(delta[ARM_IDX])) / max(cfg.max_joint_step, 1e-9)))
+    grip_steps = int(np.ceil(np.max(np.abs(delta[GRIP_IDX])) / max(cfg.max_gripper_step, 1e-9)))
+    steps = max(1, joint_steps, grip_steps)
+    result = np.stack([start + delta * (i / steps) for i in range(1, steps + 1)], axis=0)
+    result[:, 6] = np.clip(result[:, 6], 0.0, 0.08)
+    result[:, 13] = np.clip(result[:, 13], 0.0, 0.08)
+    return result
 
 
 class RobotNode(Node):
@@ -394,6 +488,7 @@ class RobotNode(Node):
             for side, service in ENABLE_SERVICES.items()
         }
         self.command_publishers: dict[str, object] = {}
+        self.last_command: Optional[np.ndarray] = None
 
     def _image_cb(self, key: str, msg: Image) -> None:
         now = time.monotonic()
@@ -450,14 +545,14 @@ class RobotNode(Node):
             return set()
         return result
 
-    def observation_ready(self, max_age: float = 1.0) -> bool:
+    def observation_ready(self, max_age: float = 1.5) -> bool:
         snap = self.monitor_snapshot()
         return (
             all(float(v["age"]) < max_age for v in snap["cameras"].values())
             and all(float(v["age"]) < max_age for v in snap["joints"].values())
         )
 
-    def arms_fresh(self, max_age: float = 0.5) -> bool:
+    def arms_fresh(self, max_age: float = 0.75) -> bool:
         snap = self.monitor_snapshot()["joints"]
         return all(float(v["age"]) < max_age for v in snap.values())
 
@@ -509,6 +604,7 @@ class RobotNode(Node):
             side: self.create_publisher(JointState, topic, 1)
             for side, topic in COMMAND_TOPICS.items()
         }
+        self.last_command = None
 
     def release_command_interfaces(self) -> None:
         for publisher in list(self.command_publishers.values()):
@@ -560,12 +656,20 @@ class RobotNode(Node):
         self.command_publishers["right"].publish(
             self.make_joint_command(action[7:], speed, gripper_effort, stamp)
         )
+        with self.lock:
+            self.last_command = np.asarray(action, dtype=np.float64).copy()
 
     def hold_current(self, speed: int = 20, gripper_effort: float = 0.5) -> None:
         if not self.command_publishers:
             return
         try:
-            state = self.state().astype(float)
+            if self.arms_fresh(1.0):
+                state = self.state().astype(float)
+            else:
+                with self.lock:
+                    state = self.last_command.copy() if self.last_command is not None else None
+                if state is None:
+                    return
         except Exception:
             return
         state[6] = np.clip(state[6], 0.0, 0.08)
@@ -577,30 +681,6 @@ class RobotNode(Node):
                 break
             time.sleep(1.0 / 30.0)
 
-    def save_snapshot(self, prompt: str) -> Path:
-        SNAPSHOT_ROOT.mkdir(parents=True, exist_ok=True)
-        root = SNAPSHOT_ROOT / datetime.now().strftime("snapshot-%Y%m%d-%H%M%S")
-        root.mkdir(parents=True, exist_ok=False)
-        snap = self.monitor_snapshot()
-        state = self.state()
-        metadata = {
-            "time": datetime.now().astimezone().isoformat(),
-            "prompt": prompt,
-            "state": state.tolist(),
-            "ages": self.age_report(),
-            "rates_hz": {
-                "cameras": {k: float(v["rate"]) for k, v in snap["cameras"].items()},
-                "joints": {k: float(v["rate"]) for k, v in snap["joints"].items()},
-            },
-        }
-        (root / "snapshot.json").write_text(json.dumps(metadata, indent=2) + "\n")
-        for key, _title, _topic in CAMERAS:
-            message = snap["cameras"][key]["message"]
-            if message is None:
-                continue
-            rgb = self.bridge.imgmsg_to_cv2(message, desired_encoding="rgb8")
-            PILImage.fromarray(rgb).save(root / f"{key}.png")
-        return root
 
 
 def sanitize_actions(
@@ -689,6 +769,7 @@ class RolloutRunner:
         self.stop_event = stop_event
         self.dry_run = dry_run
         self.logger = JsonlLogger("dry-inference" if dry_run else "rollout", cfg)
+        self.trajectory = LastTrajectoryWriter(LAST_TRAJECTORY_PATH)
 
     def emit_log(self, text: str) -> None:
         self.bridge.log.emit(text)
@@ -704,6 +785,28 @@ class RolloutRunner:
                 )
             time.sleep(0.02)
 
+    def wait_for_arm_feedback(self, seconds: float, context: str) -> None:
+        started = time.monotonic()
+        deadline = started + seconds
+        warned = False
+        while not self.node.arms_fresh(self.cfg.arm_age_limit):
+            if self.stop_event.is_set():
+                raise InterruptedError("Stop requested")
+            if not warned:
+                self.emit_log(
+                    f"Arm feedback stale {context}; pausing new targets for up to {seconds:.1f}s"
+                )
+                warned = True
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"Arm feedback did not recover {context}; ages="
+                    + repr(self.node.age_report())
+                )
+            time.sleep(0.01)
+        waited = time.monotonic() - started
+        if warned:
+            self.emit_log(f"Arm feedback recovered {context} after {waited:.3f}s")
+
     def connect_client(self):
         if not tcp_server_up(self.cfg.host, self.cfg.port, timeout=0.5):
             raise RuntimeError(
@@ -713,7 +816,6 @@ class RolloutRunner:
             host=self.cfg.host,
             port=self.cfg.port,
         )
-        self.bridge.server_metadata.emit(client.get_server_metadata())
         return client
 
     def run(self) -> None:
@@ -755,8 +857,13 @@ class RolloutRunner:
                 self.wait_for_observation(self.cfg.feedback_recovery_seconds)
                 self.emit_log("Feedback recovered after enable")
 
+            start_state = self.node.state().astype(np.float64)
+            start_state[6] = np.clip(start_state[6], 0.0, 0.08)
+            start_state[13] = np.clip(start_state[13], 0.0, 0.08)
+            self.trajectory.start(start_state, self.cfg.rate_hz)
+            self.emit_log(f"Saving latest inference trajectory: {LAST_TRAJECTORY_PATH}")
             self.bridge.rollout_state.emit("running", "Full task rollout running")
-            self.logger.write("motion_start")
+            self.logger.write("motion_start", trajectory=str(LAST_TRAJECTORY_PATH))
             start = time.monotonic()
             cycle = 0
             while time.monotonic() - start < self.cfg.max_seconds:
@@ -788,6 +895,7 @@ class RolloutRunner:
             )
             self.bridge.worker_error.emit("Rollout aborted", detail)
         finally:
+            self.trajectory.close()
             if command_armed:
                 try:
                     self.bridge.rollout_state.emit("holding", "Commanding current-position hold")
@@ -820,10 +928,9 @@ class RolloutRunner:
         result = client.infer(obs)
         inference_seconds = time.monotonic() - infer_start
 
-        if not self.node.arms_fresh(self.cfg.arm_age_limit):
-            raise RuntimeError(
-                "Arm feedback stale after inference; ages=" + repr(self.node.age_report())
-            )
+        # Inference can briefly delay ROS callbacks. Pause until measured arm feedback
+        # is fresh again instead of treating a single stale sample as a hard failure.
+        self.wait_for_arm_feedback(self.cfg.feedback_grace_seconds, "after inference")
 
         current = self.node.state()
         raw = np.asarray(result["actions"], dtype=np.float64)
@@ -872,12 +979,13 @@ class RolloutRunner:
             if self.stop_event.is_set():
                 raise InterruptedError("Stop requested")
             if not self.node.arms_fresh(self.cfg.arm_age_limit):
-                raise RuntimeError(
-                    "Arm feedback lost during motion; ages=" + repr(self.node.age_report())
-                )
+                self.wait_for_arm_feedback(self.cfg.feedback_grace_seconds, "during motion")
+                # Do not try to catch up after a feedback pause; resume the timing grid now.
+                next_tick = time.monotonic()
             self.node.publish_target(
                 published[i], self.cfg.command_speed, self.cfg.gripper_effort
             )
+            self.trajectory.append(published[i])
             next_tick += period
             delay = next_tick - time.monotonic()
             if delay > 0:
@@ -889,6 +997,175 @@ class RolloutRunner:
         metrics["max_publish_lag_ms"] = max_lag * 1000.0
         self.bridge.rollout_metrics.emit(metrics)
         self.logger.write("chunk_published", cycle=cycle, max_publish_lag_ms=max_lag * 1000.0)
+
+
+class ReturnHomeRunner:
+    """Replay the latest inference command path in reverse without calling the policy."""
+
+    ENDPOINT_MAX_JOINT_ERROR = 0.25
+    ENDPOINT_MAX_GRIPPER_ERROR = 0.03
+
+    def __init__(
+        self,
+        node: RobotNode,
+        bridge: Bridge,
+        cfg: RolloutConfig,
+        stop_event: threading.Event,
+    ) -> None:
+        self.node = node
+        self.bridge = bridge
+        self.cfg = cfg
+        self.stop_event = stop_event
+        self.logger = JsonlLogger("return-home", cfg)
+
+    def emit_log(self, text: str) -> None:
+        self.bridge.log.emit(text)
+
+    def wait_for_arms(self, seconds: float, context: str) -> None:
+        started = time.monotonic()
+        deadline = started + seconds
+        warned = False
+        while not self.node.arms_fresh(self.cfg.arm_age_limit):
+            if self.stop_event.is_set():
+                raise InterruptedError("Stop requested")
+            if not warned:
+                self.emit_log(
+                    f"Arm feedback stale {context}; pausing new targets for up to {seconds:.1f}s"
+                )
+                warned = True
+            if time.monotonic() > deadline:
+                raise RuntimeError(
+                    f"Arm feedback did not recover {context}; ages="
+                    + repr(self.node.age_report())
+                )
+            time.sleep(0.01)
+        if warned:
+            self.emit_log(
+                f"Arm feedback recovered {context} after {time.monotonic() - started:.3f}s"
+            )
+
+    def run(self) -> None:
+        status = "finished"
+        detail = ""
+        command_armed = False
+        try:
+            start_state, targets, recorded_rate = load_last_trajectory(LAST_TRAJECTORY_PATH)
+            self.bridge.rollout_state.emit("checking", "Checking saved return trajectory and arm feedback")
+            self.wait_for_arms(self.cfg.feedback_recovery_seconds, "before return")
+
+            self.node.ensure_command_interfaces()
+            command_armed = True
+            deadline = time.monotonic() + 3.0
+            while True:
+                counts = self.node.command_subscription_counts()
+                if counts.get("left", 0) >= 1 and counts.get("right", 0) >= 1:
+                    break
+                if time.monotonic() > deadline:
+                    raise RuntimeError(f"Piper command subscriber missing: {counts}")
+                time.sleep(0.05)
+
+            if self.cfg.auto_enable:
+                self.bridge.rollout_state.emit("enabling", "Enabling both arms for return")
+                self.node.enable_arm("left")
+                self.node.enable_arm("right")
+                self.wait_for_arms(self.cfg.feedback_recovery_seconds, "after enable")
+
+            current = self.node.state().astype(np.float64)
+            current[6] = np.clip(current[6], 0.0, 0.08)
+            current[13] = np.clip(current[13], 0.0, 0.08)
+            expected_end = targets[-1]
+            joint_error = float(np.max(np.abs((current - expected_end)[ARM_IDX])))
+            gripper_error = float(np.max(np.abs((current - expected_end)[GRIP_IDX])))
+            if joint_error > self.ENDPOINT_MAX_JOINT_ERROR or gripper_error > self.ENDPOINT_MAX_GRIPPER_ERROR:
+                raise RuntimeError(
+                    "Current pose is too far from the end of the saved inference path to reverse it safely: "
+                    f"joint error {joint_error:.3f} rad, gripper error {gripper_error:.3f} m"
+                )
+
+            approach = bounded_transition(current, expected_end, self.cfg)
+            parts = [approach]
+            if len(targets) > 1:
+                parts.append(targets[-2::-1])
+            parts.append(start_state.reshape(1, 14))
+            sequence = np.vstack(parts)
+
+            lo = np.tile(SINGLE_LO, 2) - JOINT_LIMIT_MARGIN
+            hi = np.tile(SINGLE_HI, 2) + JOINT_LIMIT_MARGIN
+            arm_values = sequence[:, ARM_IDX]
+            if np.any(arm_values < lo) or np.any(arm_values > hi):
+                raise RuntimeError("Saved return trajectory contains a joint target outside allowed range")
+            if np.any(sequence[:, GRIP_IDX] < 0.0) or np.any(sequence[:, GRIP_IDX] > 0.08):
+                raise RuntimeError("Saved return trajectory contains a gripper target outside [0, 0.08] m")
+
+            rate_hz = min(float(self.cfg.rate_hz), float(recorded_rate))
+            period = 1.0 / max(rate_hz, 1.0)
+            self.logger.write(
+                "return_start",
+                trajectory=str(LAST_TRAJECTORY_PATH),
+                saved_targets=int(len(targets)),
+                return_targets=int(len(sequence)),
+                rate_hz=rate_hz,
+                endpoint_joint_error=joint_error,
+                endpoint_gripper_error=gripper_error,
+            )
+            self.bridge.rollout_state.emit(
+                "returning",
+                f"Returning along last inference path · {len(sequence)} targets · {rate_hz:.1f} Hz",
+            )
+
+            next_tick = time.monotonic()
+            for index, target in enumerate(sequence, start=1):
+                if self.stop_event.is_set():
+                    status = "stopped"
+                    detail = "Stop requested during return"
+                    break
+                if not self.node.arms_fresh(self.cfg.arm_age_limit):
+                    self.wait_for_arms(self.cfg.feedback_grace_seconds, "during return")
+                    next_tick = time.monotonic()
+
+                self.node.publish_target(target, self.cfg.command_speed, self.cfg.gripper_effort)
+                if index == 1 or index % 100 == 0 or index == len(sequence):
+                    self.emit_log(f"RETURN {index}/{len(sequence)}")
+                next_tick += period
+                delay = next_tick - time.monotonic()
+                if delay > 0:
+                    time.sleep(delay)
+
+            if status == "finished":
+                detail = "Returned to the recorded inference start pose"
+            self.logger.write("return_end", status=status, detail=detail)
+
+        except InterruptedError as exc:
+            status = "stopped"
+            detail = str(exc)
+            self.logger.write("return_end", status=status, detail=detail)
+        except BaseException as exc:
+            status = "aborted"
+            detail = str(exc)
+            self.logger.write(
+                "return_end",
+                status=status,
+                detail=detail,
+                traceback=traceback.format_exc(),
+            )
+            self.bridge.worker_error.emit("Return aborted", detail)
+        finally:
+            if command_armed:
+                try:
+                    self.bridge.rollout_state.emit("holding", "Commanding current-position hold")
+                    self.node.hold_current(self.cfg.command_speed, self.cfg.gripper_effort)
+                except Exception as exc:
+                    self.emit_log(f"Hold failed: {exc}")
+                try:
+                    self.node.release_command_interfaces()
+                except Exception:
+                    pass
+            label = {
+                "finished": "Return finished",
+                "stopped": "Return stopped / holding",
+                "aborted": "Return aborted / holding",
+            }.get(status, status)
+            self.bridge.rollout_state.emit("idle", f"{label}: {detail}".strip())
 
 
 class PreviewLabel(QLabel):
@@ -958,6 +1235,10 @@ class Window(QMainWindow):
         self.bridge = bridge
         self.settings = QSettings("LaundryButler", "Inference")
         self.managed: dict[str, ManagedProcess] = {}
+        self.process_lock = threading.RLock()
+        self.system_health_inflight = False
+        self.last_ros_nodes: set[str] = set()
+        self.last_server_up = False
         self.rollout_stop = threading.Event()
         self.rollout_thread: Optional[threading.Thread] = None
         self.last_metrics: dict[str, object] = {}
@@ -965,7 +1246,6 @@ class Window(QMainWindow):
         self.last_preview = {key: 0.0 for key, _title, _topic in CAMERAS}
 
         LOG_ROOT.mkdir(parents=True, exist_ok=True)
-        SNAPSHOT_ROOT.mkdir(parents=True, exist_ok=True)
         RUNTIME_ROOT.mkdir(parents=True, exist_ok=True)
 
         self.setWindowTitle("Laundry Butler inference")
@@ -1042,14 +1322,14 @@ class Window(QMainWindow):
         self.connect_signals()
         self.monitor_timer = QTimer(self)
         self.monitor_timer.timeout.connect(self.refresh_monitor)
-        self.monitor_timer.start(200)
+        self.monitor_timer.start(250)
         self.system_timer = QTimer(self)
-        self.system_timer.timeout.connect(self.refresh_system_health)
+        self.system_timer.timeout.connect(self.request_system_health)
         self.system_timer.start(1200)
-        QTimer.singleShot(100, self.refresh_system_health)
+        QTimer.singleShot(100, self.request_system_health)
 
     def build_system_group(self) -> QGroupBox:
-        self.domain_label = QLabel(f"ROS domain: {os.environ.get('ROS_DOMAIN_ID', '88')}")
+        self.domain_label = QLabel(f"ROS domain: {os.environ.get('ROS_DOMAIN_ID', '0')}")
         self.can_left_label = QLabel("can_left: checking")
         self.can_right_label = QLabel("can_right: checking")
         self.server_label = QLabel("Policy server: checking")
@@ -1069,17 +1349,18 @@ class Window(QMainWindow):
         self.start_can_btn = QPushButton("Start CAN — 1 Mbit/s")
         self.start_cameras_btn = QPushButton("Start cameras")
         self.start_arms_btn = QPushButton("Start arms — observe only")
-        self.stop_managed_btn = QPushButton("Stop managed subsystems")
-        self.query_server_btn = QPushButton("Query policy metadata")
-        self.snapshot_btn = QPushButton("Save observation snapshot")
+        self.stop_managed_btn = QPushButton("Stop cameras / arms")
+        self.start_server_btn = QPushButton("Start policy server")
+        self.stop_server_btn = QPushButton("Stop policy server")
+        self.stop_server_btn.setEnabled(False)
 
         grid = QGridLayout()
         grid.addWidget(self.start_can_btn, 0, 0)
         grid.addWidget(self.start_cameras_btn, 0, 1)
         grid.addWidget(self.start_arms_btn, 1, 0)
         grid.addWidget(self.stop_managed_btn, 1, 1)
-        grid.addWidget(self.query_server_btn, 2, 0)
-        grid.addWidget(self.snapshot_btn, 2, 1)
+        grid.addWidget(self.start_server_btn, 2, 0)
+        grid.addWidget(self.stop_server_btn, 2, 1)
 
         group = QGroupBox("1. System")
         layout = QVBoxLayout(group)
@@ -1095,6 +1376,17 @@ class Window(QMainWindow):
 
     def build_rollout_group(self) -> QGroupBox:
         self.prompt_edit = QLineEdit("Fold the shirt.")
+        self.checkpoint_combo = QComboBox()
+        self.checkpoint_combo.setEditable(True)
+        self.checkpoint_combo.setMinimumContentsLength(42)
+        self.checkpoint_combo.setSizeAdjustPolicy(QComboBox.AdjustToContentsOnFirstShow)
+        self.checkpoint_browse_btn = QPushButton("Browse…")
+        checkpoint_row = QWidget()
+        checkpoint_layout = QHBoxLayout(checkpoint_row)
+        checkpoint_layout.setContentsMargins(0, 0, 0, 0)
+        checkpoint_layout.addWidget(self.checkpoint_combo, 1)
+        checkpoint_layout.addWidget(self.checkpoint_browse_btn)
+        self.populate_checkpoint_combo()
         self.host_edit = QLineEdit("127.0.0.1")
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1, 65535)
@@ -1146,6 +1438,7 @@ class Window(QMainWindow):
 
         form = QFormLayout()
         form.addRow("Instruction", self.prompt_edit)
+        form.addRow("Checkpoint", checkpoint_row)
         form.addRow("Policy host", self.host_edit)
         form.addRow("Policy port", self.port_spin)
         form.addRow("Publish rate", self.rate_spin)
@@ -1163,6 +1456,9 @@ class Window(QMainWindow):
         self.stop_btn = QPushButton("STOP / HOLD")
         self.stop_btn.setObjectName("dangerButton")
         self.stop_btn.setEnabled(False)
+        self.return_btn = QPushButton("RETURN ALONG LAST TRAJECTORY")
+        self.return_btn.setObjectName("warningButton")
+        self.return_btn.setEnabled(LAST_TRAJECTORY_PATH.is_file())
         self.rollout_badge = QLabel("Idle")
         self.rollout_badge.setAlignment(Qt.AlignCenter)
         self.rollout_badge.setProperty("health", "warn")
@@ -1172,6 +1468,7 @@ class Window(QMainWindow):
         buttons.addWidget(self.start_btn, 0, 1)
         buttons.addWidget(self.stop_btn, 1, 0)
         buttons.addWidget(self.rollout_badge, 1, 1)
+        buttons.addWidget(self.return_btn, 2, 0, 1, 2)
 
         group = QGroupBox("2. Inference / motion")
         layout = QVBoxLayout(group)
@@ -1243,11 +1540,13 @@ class Window(QMainWindow):
         self.start_cameras_btn.clicked.connect(lambda: self.start_subsystem("cameras"))
         self.start_arms_btn.clicked.connect(self.start_arms)
         self.stop_managed_btn.clicked.connect(self.stop_managed_subsystems)
-        self.query_server_btn.clicked.connect(self.query_server_metadata)
-        self.snapshot_btn.clicked.connect(self.save_snapshot)
+        self.start_server_btn.clicked.connect(self.start_policy_server)
+        self.stop_server_btn.clicked.connect(self.stop_policy_server)
         self.dry_btn.clicked.connect(lambda: self.start_runner(dry_run=True))
         self.start_btn.clicked.connect(lambda: self.start_runner(dry_run=False))
         self.stop_btn.clicked.connect(self.stop_rollout)
+        self.return_btn.clicked.connect(self.start_return_home)
+        self.checkpoint_browse_btn.clicked.connect(self.browse_checkpoint)
         self.clear_log_btn.clicked.connect(self.log_edit.clear)
         self.copy_diag_btn.clicked.connect(self.copy_diagnostics)
 
@@ -1256,14 +1555,49 @@ class Window(QMainWindow):
         self.bridge.rollout_metrics.connect(self.on_metrics)
         self.bridge.action_debug.connect(self.on_action_debug)
         self.bridge.worker_error.connect(self.on_worker_error)
-        self.bridge.server_metadata.connect(self.on_server_metadata)
-        self.bridge.snapshot_saved.connect(
-            lambda path: self.statusBar().showMessage(f"Snapshot saved: {path}", 7000)
-        )
+        self.bridge.system_health.connect(self.apply_system_health)
 
     def append_log(self, text: str) -> None:
         stamp = datetime.now().strftime("%H:%M:%S")
         self.log_edit.append(f"[{stamp}] {text}")
+
+
+
+    def populate_checkpoint_combo(self) -> None:
+        found: list[Path] = []
+        if CHECKPOINT_ROOT.is_dir():
+            for root, dirs, _files in os.walk(CHECKPOINT_ROOT):
+                if "params" in dirs:
+                    found.append(Path(root))
+                    dirs.remove("params")
+        found = sorted(set(found), key=lambda p: str(p))
+        for path in found:
+            self.checkpoint_combo.addItem(str(path))
+
+        saved = str(self.settings.value("checkpoint", str(DEFAULT_CHECKPOINT)))
+        if self.checkpoint_combo.findText(saved) < 0:
+            self.checkpoint_combo.addItem(saved)
+        self.checkpoint_combo.setCurrentText(saved)
+
+    def checkpoint_path(self) -> Path:
+        return Path(self.checkpoint_combo.currentText().strip()).expanduser()
+
+    def browse_checkpoint(self) -> None:
+        current = self.checkpoint_path()
+        start_dir = current if current.is_dir() else CHECKPOINT_ROOT
+        selected = QFileDialog.getExistingDirectory(
+            self,
+            "Select OpenPI checkpoint directory",
+            str(start_dir),
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks,
+        )
+        if not selected:
+            return
+        if self.checkpoint_combo.findText(selected) < 0:
+            self.checkpoint_combo.addItem(selected)
+        self.checkpoint_combo.setCurrentText(selected)
+        self.settings.setValue("checkpoint", selected)
+
 
     def rollout_config(self) -> RolloutConfig:
         return RolloutConfig(
@@ -1284,7 +1618,7 @@ class Window(QMainWindow):
         if self.rollout_thread is not None and self.rollout_thread.is_alive():
             return
         cfg = self.rollout_config()
-        if not tcp_server_up(cfg.host, cfg.port, timeout=0.25):
+        if not self.last_server_up:
             QMessageBox.critical(
                 self,
                 "Policy server unavailable",
@@ -1320,6 +1654,49 @@ class Window(QMainWindow):
         self.set_controls_running(True, dry_run)
         self.rollout_thread.start()
 
+
+
+    def start_return_home(self) -> None:
+        if self.rollout_thread is not None and self.rollout_thread.is_alive():
+            return
+        if not LAST_TRAJECTORY_PATH.is_file():
+            QMessageBox.warning(
+                self,
+                "No saved trajectory",
+                f"No previous physical inference trajectory was found:\n{LAST_TRAJECTORY_PATH}",
+            )
+            return
+
+        cfg = self.rollout_config()
+        if not self.node.arms_fresh(cfg.arm_age_limit):
+            QMessageBox.critical(
+                self,
+                "Arm feedback not ready",
+                "Both arm joint streams must be fresh before return.\n\n"
+                + repr(self.node.age_report()),
+            )
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Return along last inference trajectory",
+            "This will replay the LAST inference command path in reverse using saved absolute joint targets.\n\n"
+            "It is not collision planning. Only continue if the workspace has not changed and the robot is still "
+            "near the endpoint of that run.\n\n"
+            "The hardware E-stop should remain accessible.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        self.rollout_stop = threading.Event()
+        runner = ReturnHomeRunner(self.node, self.bridge, cfg, self.rollout_stop)
+        self.rollout_thread = threading.Thread(target=runner.run, daemon=True)
+        self.set_controls_running(True, dry_run=False)
+        self.rollout_thread.start()
+
+
     def stop_rollout(self) -> None:
         if self.rollout_thread is None or not self.rollout_thread.is_alive():
             return
@@ -1332,16 +1709,19 @@ class Window(QMainWindow):
         self.start_btn.setEnabled(not running)
         self.dry_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running and not dry_run)
+        self.return_btn.setEnabled((not running) and LAST_TRAJECTORY_PATH.is_file())
         for widget in (
             self.start_can_btn,
             self.start_cameras_btn,
             self.start_arms_btn,
             self.stop_managed_btn,
+            self.start_server_btn,
+            self.stop_server_btn,
         ):
             widget.setEnabled(not running)
 
     def on_rollout_state(self, state: str, detail: str) -> None:
-        status = "pass" if state == "running" else "warn"
+        status = "pass" if state in {"running", "returning"} else "warn"
         if state in {"checking", "enabling", "holding", "dry"}:
             status = "warn"
         if state == "idle":
@@ -1390,11 +1770,12 @@ class Window(QMainWindow):
     def refresh_monitor(self) -> None:
         snap = self.node.monitor_snapshot()
         now = time.monotonic()
+        cfg = self.rollout_config()
         for key, _title, _topic in CAMERAS:
             values = snap["cameras"][key]
             age = float(values["age"])
             stream_rate = float(values["rate"])
-            if age < 1.0:
+            if age < cfg.observation_age_limit:
                 health(self.camera_panes[key].health, f"{stream_rate:.1f} Hz · age {age:.3f}s", "pass")
             elif age < 3.0:
                 health(self.camera_panes[key].health, f"{stream_rate:.1f} Hz · age {age:.2f}s", "warn")
@@ -1411,9 +1792,9 @@ class Window(QMainWindow):
             age = float(values["age"])
             stream_rate = float(values["rate"])
             state = values["state"]
-            if age < 0.5:
+            if age < cfg.arm_age_limit:
                 health(self.arm_panes[side].health, f"{stream_rate:.1f} Hz · age {age:.3f}s", "pass")
-            elif age < 1.0:
+            elif age < cfg.arm_age_limit + cfg.feedback_grace_seconds:
                 health(self.arm_panes[side].health, f"{stream_rate:.1f} Hz · age {age:.3f}s", "warn")
             else:
                 health(self.arm_panes[side].health, "No fresh signal", "fail")
@@ -1426,7 +1807,6 @@ class Window(QMainWindow):
                 )
                 self.arm_panes[side].values.setText(rendered)
 
-        cfg = self.rollout_config()
         ready = self.node.observation_ready(cfg.observation_age_limit)
         health(
             self.observation_label,
@@ -1444,8 +1824,51 @@ class Window(QMainWindow):
         else:
             health(self.command_label, "Command path: monitor-only / no publishers", "pass")
 
-    def refresh_system_health(self) -> None:
-        nodes = self.node.ros_nodes()
+    def request_system_health(self) -> None:
+        if self.system_health_inflight:
+            return
+        self.system_health_inflight = True
+
+        cfg = self.rollout_config()
+
+        def target() -> None:
+            try:
+                nodes = self.node.ros_nodes()
+                can_left = can_status("can_left")
+                can_right = can_status("can_right")
+                server_up = tcp_server_up(cfg.host, cfg.port, timeout=0.15)
+                with self.process_lock:
+                    process_state = {
+                        name: {
+                            "alive": managed.process.poll() is None,
+                            "pid": managed.process.pid,
+                            "log": str(managed.log_path),
+                        }
+                        for name, managed in self.managed.items()
+                    }
+                payload = {
+                    "nodes": nodes,
+                    "can_left": can_left,
+                    "can_right": can_right,
+                    "server_up": server_up,
+                    "host": cfg.host,
+                    "port": cfg.port,
+                    "processes": process_state,
+                }
+                self.bridge.system_health.emit(payload)
+            except BaseException as exc:
+                self.bridge.log.emit(f"System-health poll failed: {exc}")
+                self.bridge.system_health.emit({"error": str(exc)})
+
+        threading.Thread(target=target, daemon=True).start()
+
+    def apply_system_health(self, payload: object) -> None:
+        self.system_health_inflight = False
+        if not isinstance(payload, dict) or "error" in payload:
+            return
+
+        nodes = set(payload.get("nodes", set()))
+        self.last_ros_nodes = nodes
         cams = CAMERA_NODES & nodes
         arms = ARM_NODES & nodes
         health(
@@ -1453,30 +1876,57 @@ class Window(QMainWindow):
             f"Subsystems: cameras {len(cams)}/3 · arms {len(arms)}/2",
             "pass" if len(cams) == 3 and len(arms) == 2 else "warn",
         )
-        self.start_cameras_btn.setEnabled(len(cams) == 0 and not self.runner_active())
-        self.start_arms_btn.setEnabled(len(arms) == 0 and not self.runner_active())
-        self.start_can_btn.setEnabled(len(arms) == 0 and not self.runner_active())
-        self.stop_managed_btn.setEnabled(bool(self.managed) and not self.runner_active())
 
-        for iface, label in (("can_left", self.can_left_label), ("can_right", self.can_right_label)):
-            status, detail = can_status(iface)
+        processes = dict(payload.get("processes", {}))
+        server_proc = processes.get("server")
+        server_alive = bool(server_proc and server_proc.get("alive"))
+        self.last_server_up = bool(payload.get("server_up", False))
+
+        running = self.runner_active()
+        self.start_cameras_btn.setEnabled(len(cams) == 0 and not running)
+        self.start_arms_btn.setEnabled(len(arms) == 0 and not running)
+        self.start_can_btn.setEnabled(len(arms) == 0 and not running)
+        self.stop_managed_btn.setEnabled(
+            any(name in processes and processes[name].get("alive") for name in ("cameras", "arms"))
+            and not running
+        )
+        self.start_server_btn.setEnabled(not self.last_server_up and not server_alive and not running)
+        self.stop_server_btn.setEnabled((self.last_server_up or server_alive) and not running)
+
+        for iface, label, key in (
+            ("can_left", self.can_left_label, "can_left"),
+            ("can_right", self.can_right_label, "can_right"),
+        ):
+            status, detail = payload[key]
             health(label, f"{iface}: {detail}", status)
 
-        cfg = self.rollout_config()
-        up = tcp_server_up(cfg.host, cfg.port)
-        health(
-            self.server_label,
-            f"Policy server: {'UP' if up else 'DOWN'} · {cfg.host}:{cfg.port}",
-            "pass" if up else "fail",
-        )
+        host = str(payload.get("host", "127.0.0.1"))
+        port = int(payload.get("port", 8000))
+        if self.last_server_up:
+            suffix = f" · PID {server_proc.get('pid')}" if server_proc else ""
+            health(self.server_label, f"Policy server: UP · {host}:{port}{suffix}", "pass")
+        elif server_alive:
+            health(
+                self.server_label,
+                f"Policy server: LOADING · PID {server_proc.get('pid')} · {host}:{port}",
+                "warn",
+            )
+        else:
+            health(self.server_label, f"Policy server: DOWN · {host}:{port}", "fail")
 
-        for name, managed in list(self.managed.items()):
-            if managed.process.poll() is not None:
-                try:
-                    managed.log_handle.close()
-                except Exception:
-                    pass
-                del self.managed[name]
+        # Clean up managed processes that exited since the last poll.
+        dead = [name for name, info in processes.items() if not info.get("alive")]
+        if dead:
+            with self.process_lock:
+                for name in dead:
+                    managed = self.managed.pop(name, None)
+                    if managed is not None:
+                        try:
+                            managed.log_handle.close()
+                        except Exception:
+                            pass
+                        self.append_log(f"{name} process exited; log={managed.log_path}")
+
 
     def runner_active(self) -> bool:
         return self.rollout_thread is not None and self.rollout_thread.is_alive()
@@ -1484,7 +1934,7 @@ class Window(QMainWindow):
     def start_can(self) -> None:
         if self.runner_active():
             return
-        if ARM_NODES & self.node.ros_nodes():
+        if ARM_NODES & self.last_ros_nodes:
             QMessageBox.warning(self, "Arms are running", "Stop arm nodes before reconfiguring CAN.")
             return
 
@@ -1495,7 +1945,6 @@ class Window(QMainWindow):
                 self.bridge.worker_error.emit("CAN setup failed", str(exc))
             else:
                 self.bridge.log.emit(result)
-                QTimer.singleShot(0, self.refresh_system_health)
 
         threading.Thread(target=target, daemon=True).start()
 
@@ -1516,7 +1965,7 @@ class Window(QMainWindow):
     def start_subsystem(self, name: str) -> None:
         expected = CAMERA_NODES if name == "cameras" else ARM_NODES
         launch_file = CAMERA_LAUNCH if name == "cameras" else ARM_LAUNCH
-        present = expected & self.node.ros_nodes()
+        present = expected & self.last_ros_nodes
         if present:
             QMessageBox.warning(
                 self,
@@ -1540,20 +1989,44 @@ class Window(QMainWindow):
         except Exception:
             log_handle.close()
             raise
-        self.managed[name] = ManagedProcess(name, process, log_handle, log_path)
+        with self.process_lock:
+            self.managed[name] = ManagedProcess(name, process, log_handle, log_path)
         self.append_log(f"Started {name}; log={log_path}")
-        self.refresh_system_health()
+        self.request_system_health()
 
     def stop_managed_subsystems(self) -> None:
-        for managed in list(self.managed.values()):
-            self.stop_process_sync(managed)
-            try:
-                managed.log_handle.close()
-            except Exception:
-                pass
-        self.managed.clear()
-        self.append_log("Stopped managed camera/arm subprocesses")
-        self.refresh_system_health()
+        if self.runner_active():
+            return
+        self.stop_managed_btn.setEnabled(False)
+        cfg = self.rollout_config()
+        host = cfg.host
+        port = cfg.port
+
+        def target() -> None:
+            with self.process_lock:
+                targets = [
+                    self.managed[name]
+                    for name in ("cameras", "arms")
+                    if name in self.managed
+                ]
+            for managed in targets:
+                self.stop_process_sync(managed)
+                try:
+                    managed.log_handle.close()
+                except Exception:
+                    pass
+                with self.process_lock:
+                    self.managed.pop(managed.name, None)
+            self.bridge.log.emit("Stopped managed camera/arm subprocesses")
+            self.bridge.system_health.emit({"nodes": self.node.ros_nodes(),
+                                            "can_left": can_status("can_left"),
+                                            "can_right": can_status("can_right"),
+                                            "server_up": tcp_server_up(host, port, timeout=0.15),
+                                            "host": host,
+                                            "port": port,
+                                            "processes": self._process_state_snapshot()})
+
+        threading.Thread(target=target, daemon=True).start()
 
     @staticmethod
     def stop_process_sync(managed: ManagedProcess) -> None:
@@ -1562,13 +2035,13 @@ class Window(QMainWindow):
             return
         try:
             os.killpg(process.pid, signal.SIGINT)
-            process.wait(timeout=5.0)
+            process.wait(timeout=4.0)
             return
         except Exception:
             pass
         try:
             os.killpg(process.pid, signal.SIGTERM)
-            process.wait(timeout=3.0)
+            process.wait(timeout=2.0)
             return
         except Exception:
             pass
@@ -1577,42 +2050,118 @@ class Window(QMainWindow):
         except Exception:
             pass
 
-    def query_server_metadata(self) -> None:
+    def _process_state_snapshot(self) -> dict[str, dict[str, object]]:
+        with self.process_lock:
+            return {
+                name: {
+                    "alive": managed.process.poll() is None,
+                    "pid": managed.process.pid,
+                    "log": str(managed.log_path),
+                }
+                for name, managed in self.managed.items()
+            }
+
+    def start_policy_server(self) -> None:
+        if self.runner_active():
+            return
         cfg = self.rollout_config()
+        if self.last_server_up:
+            self.append_log(f"Policy server already listening at {cfg.host}:{cfg.port}")
+            return
+        if not POLICY_SERVER_SCRIPT.is_file():
+            QMessageBox.critical(self, "Policy server missing", str(POLICY_SERVER_SCRIPT))
+            return
+        if not OPENPI_ROOT.is_dir():
+            QMessageBox.critical(self, "OpenPI missing", str(OPENPI_ROOT))
+            return
+
+        checkpoint = self.checkpoint_path()
+        self.settings.setValue("checkpoint", str(checkpoint))
+        if not (checkpoint / "params").is_dir():
+            QMessageBox.critical(self, "Checkpoint invalid", f"Missing params directory:\n{checkpoint / 'params'}")
+            return
+
+        log_path = RUNTIME_ROOT / f"server-{datetime.now():%Y%m%d-%H%M%S}.log"
+        log_handle = log_path.open("w", encoding="utf-8", buffering=1)
+
+        argv = [
+            "uv", "run", "python", str(POLICY_SERVER_SCRIPT),
+            "--checkpoint", str(checkpoint),
+            "--prompt", cfg.prompt,
+            "--host", cfg.host,
+            "--port", str(cfg.port),
+        ]
+        command = "cd " + shlex.quote(str(OPENPI_ROOT)) + " && exec " + " ".join(shlex.quote(x) for x in argv)
+
+        # The workstation restricts /dev/nvidia0 to vglusers. If the GUI's login
+        # session predates the group change, sg grants the child process the
+        # already-configured group without requiring a desktop logout.
+        if os.access("/dev/nvidia0", os.R_OK | os.W_OK):
+            launch_argv = ["bash", "-lc", command]
+        else:
+            launch_argv = ["sg", "vglusers", "-c", command]
+
+        try:
+            process = subprocess.Popen(
+                launch_argv,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                text=True,
+                start_new_session=True,
+            )
+        except Exception as exc:
+            log_handle.close()
+            QMessageBox.critical(self, "Policy server launch failed", str(exc))
+            return
+
+        with self.process_lock:
+            self.managed["server"] = ManagedProcess("server", process, log_handle, log_path)
+        self.append_log(f"Started policy server PID {process.pid}; log={log_path}")
+        self.start_server_btn.setEnabled(False)
+        self.stop_server_btn.setEnabled(True)
+        self.request_system_health()
+
+    def stop_policy_server(self) -> None:
+        if self.runner_active():
+            QMessageBox.warning(self, "Rollout active", "STOP / HOLD the rollout before stopping the policy server.")
+            return
+        with self.process_lock:
+            managed = self.managed.get("server")
+        if managed is None:
+            self.append_log("No GUI-managed policy server process is running")
+            self.request_system_health()
+            return
+
+        self.stop_server_btn.setEnabled(False)
+        cfg = self.rollout_config()
+        host = cfg.host
+        port = cfg.port
 
         def target() -> None:
+            self.stop_process_sync(managed)
             try:
-                if not tcp_server_up(cfg.host, cfg.port, timeout=0.5):
-                    raise RuntimeError(f"Server down at {cfg.host}:{cfg.port}")
-                client = websocket_client_policy.WebsocketClientPolicy(host=cfg.host, port=cfg.port)
-                self.bridge.server_metadata.emit(client.get_server_metadata())
-            except BaseException as exc:
-                self.bridge.worker_error.emit("Policy metadata failed", str(exc))
+                managed.log_handle.close()
+            except Exception:
+                pass
+            with self.process_lock:
+                self.managed.pop("server", None)
+            self.bridge.log.emit("Stopped policy server")
+            self.bridge.system_health.emit({"nodes": self.node.ros_nodes(),
+                                            "can_left": can_status("can_left"),
+                                            "can_right": can_status("can_right"),
+                                            "server_up": False,
+                                            "host": host,
+                                            "port": port,
+                                            "processes": self._process_state_snapshot()})
 
         threading.Thread(target=target, daemon=True).start()
 
-    def on_server_metadata(self, metadata: object) -> None:
-        self.append_log("Policy metadata: " + json.dumps(metadata, sort_keys=True))
-
-    def save_snapshot(self) -> None:
-        prompt = self.prompt_edit.text().strip() or "Fold the shirt."
-
-        def target() -> None:
-            try:
-                root = self.node.save_snapshot(prompt)
-            except BaseException as exc:
-                self.bridge.worker_error.emit("Snapshot failed", str(exc))
-            else:
-                self.bridge.snapshot_saved.emit(str(root))
-                self.bridge.log.emit(f"Snapshot saved: {root}")
-
-        threading.Thread(target=target, daemon=True).start()
 
     def copy_diagnostics(self) -> None:
         snap = self.node.monitor_snapshot()
         data = {
             "time": datetime.now().astimezone().isoformat(),
-            "ros_domain_id": os.environ.get("ROS_DOMAIN_ID", "88"),
+            "ros_domain_id": os.environ.get("ROS_DOMAIN_ID", "0"),
             "ages": self.node.age_report(),
             "camera_rates_hz": {k: float(v["rate"]) for k, v in snap["cameras"].items()},
             "joint_rates_hz": {k: float(v["rate"]) for k, v in snap["joints"].items()},
@@ -1650,7 +2199,17 @@ class Window(QMainWindow):
             self.node.release_command_interfaces()
         except Exception:
             pass
-        self.stop_managed_subsystems()
+        with self.process_lock:
+            closing_processes = list(self.managed.values())
+        for managed in closing_processes:
+            self.stop_process_sync(managed)
+            try:
+                managed.log_handle.close()
+            except Exception:
+                pass
+        with self.process_lock:
+            self.managed.clear()
+        self.settings.setValue("checkpoint", self.checkpoint_combo.currentText().strip())
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("mainSplitter", self.main_splitter.saveState())
         self.settings.setValue("lowerSplitter", self.lower_splitter.saveState())
@@ -1689,7 +2248,6 @@ def apply_application_style(app: QApplication) -> None:
 
 def main() -> int:
     LOG_ROOT.mkdir(parents=True, exist_ok=True)
-    SNAPSHOT_ROOT.mkdir(parents=True, exist_ok=True)
     rclpy.init()
     node = RobotNode()
     executor = MultiThreadedExecutor(num_threads=8)
