@@ -328,7 +328,7 @@ class RolloutConfig:
     arm_age_limit: float = 0.75
     observation_recovery_seconds: float = 2.5
     feedback_recovery_seconds: float = 5.0
-    feedback_grace_seconds: float = 10.0
+    feedback_grace_seconds: float = 2.0
     auto_enable: bool = True
 
 
@@ -812,41 +812,6 @@ class RolloutRunner:
         if warned:
             self.emit_log(f"Arm feedback recovered {context} after {waited:.3f}s")
 
-    def wait_for_new_arm_feedback(
-        self,
-        after_time: float,
-        seconds: float,
-        context: str,
-    ) -> None:
-        """Wait until both arms have produced JointState feedback newer than after_time."""
-        deadline = time.monotonic() + seconds
-        warned = False
-
-        while True:
-            if self.stop_event.is_set():
-                raise InterruptedError("Stop requested")
-
-            with self.node.lock:
-                left_time = self.node.joint_times.get("left", 0.0)
-                right_time = self.node.joint_times.get("right", 0.0)
-
-            if left_time > after_time and right_time > after_time:
-                if warned:
-                    self.emit_log(f"Arm feedback resumed {context}")
-                return
-
-            if not warned:
-                self.emit_log(f"Waiting for arm feedback {context}")
-                warned = True
-
-            if time.monotonic() > deadline:
-                raise RuntimeError(
-                    f"No new arm feedback {context}; ages="
-                    + repr(self.node.age_report())
-                )
-
-            time.sleep(0.002)
-
     def connect_client(self):
         if not tcp_server_up(self.cfg.host, self.cfg.port, timeout=0.5):
             raise RuntimeError(
@@ -1016,21 +981,20 @@ class RolloutRunner:
         next_tick = time.monotonic()
         max_lag = 0.0
         timing_resets = 0
-        feedback_waits = 0
+        # Never burst stale trajectory points to catch up after a scheduler stall.
+        # A large control-thread stall is unsafe: abort and let finally() hold.
+        hard_stall = max(0.25, 5.0 * period)
 
         for i in range(self.cfg.exec_steps):
             if self.stop_event.is_set():
                 raise InterruptedError("Stop requested")
 
-            # Never send motion into stale feedback.
             if not self.node.arms_fresh(self.cfg.arm_age_limit):
-                self.wait_for_arm_feedback(
-                    self.cfg.feedback_grace_seconds,
-                    "during motion",
-                )
+                self.wait_for_arm_feedback(self.cfg.feedback_grace_seconds, "during motion")
                 next_tick = time.monotonic()
 
-            # Wait for this command's scheduled time.
+            # Enforce timing BEFORE publishing.  If we missed the grid, never
+            # issue multiple trajectory points back-to-back to catch up.
             now = time.monotonic()
             delay = next_tick - now
 
@@ -1040,60 +1004,31 @@ class RolloutRunner:
                 lag = -delay
                 max_lag = max(max_lag, lag)
 
-                # We missed one or more control periods.
-                # DO NOT burst commands to catch up.
+                if lag > hard_stall:
+                    raise RuntimeError(
+                        f"Publish loop stalled {lag * 1000.0:.1f} ms; "
+                        "aborting instead of bursting stale commands"
+                    )
+
                 if lag > period:
                     timing_resets += 1
-                    feedback_waits += 1
-
-                    self.emit_log(
-                        f"Publish loop delayed {lag * 1000.0:.1f} ms; "
-                        "waiting for fresh arm feedback and resetting timing grid"
-                    )
-
-                    recovery_started = time.monotonic()
-
-                    self.wait_for_new_arm_feedback(
-                        recovery_started,
-                        self.cfg.feedback_grace_seconds,
-                        "after publish-loop delay",
-                    )
-
-                    next_tick = time.monotonic()
-
-            # Timestamp immediately before sending the new target.
-            command_time = time.monotonic()
+                    next_tick = now
 
             self.node.publish_target(
-                published[i],
-                self.cfg.command_speed,
-                self.cfg.gripper_effort,
+                published[i], self.cfg.command_speed, self.cfg.gripper_effort
             )
             self.trajectory.append(published[i])
-
-            # Require BOTH arms to report at least once after this command.
-            # Normally feedback is ~170 Hz, so this should only take a few ms.
-            self.wait_for_new_arm_feedback(
-                command_time,
-                self.cfg.feedback_grace_seconds,
-                f"after target {i + 1}/{self.cfg.exec_steps}",
-            )
-
-            # Crucially, schedule relative to the actual command time.
-            # A delay never causes future targets to be compressed together.
-            next_tick = command_time + period
+            next_tick += period
 
         metrics = dict(metrics)
         metrics["max_publish_lag_ms"] = max_lag * 1000.0
         metrics["timing_resets"] = timing_resets
-        metrics["feedback_waits"] = feedback_waits
         self.bridge.rollout_metrics.emit(metrics)
         self.logger.write(
             "chunk_published",
             cycle=cycle,
             max_publish_lag_ms=max_lag * 1000.0,
             timing_resets=timing_resets,
-            feedback_waits=feedback_waits,
         )
 
 
