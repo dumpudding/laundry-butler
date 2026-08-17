@@ -165,8 +165,7 @@ topics.
 - automatic recovery from a stream dropping during recording;
 - dataset conversion through the GUI;
 - robot replay;
-- policy inference;
-- homing, reset, enable, or motion controls.
+- general-purpose homing, reset, or robot-enable controls outside the guarded inference workflow.
 
 ## Repository policy
 
@@ -180,3 +179,19 @@ Do not commit:
 - ROS `build/`, `install/`, or `log/` directories;
 - local workspaces;
 - secrets or machine credentials.
+
+## Inference GUI
+
+The current inference implementation lives under `inference/` and is launched
+from `gui/run_inference_gui.sh`.
+
+```bash
+cd ~/laundry-butler
+./gui/run_inference_gui.sh
+```
+
+The inference GUI manages the policy-server subprocess directly; no separate
+server launcher is required. The inference launcher defaults to
+`ROS_DOMAIN_ID=0`.
+
+See `docs/inference_gui.md` for the current layout and runtime notes.

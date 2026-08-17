@@ -49,8 +49,11 @@ Camera workspace:
 Piper workspace:
   /home/laundrybutler/piper_ws
 
-Default ROS domain:
+Default data-collection ROS domain:
   ROS_DOMAIN_ID=88
+
+Default inference GUI ROS domain:
+  ROS_DOMAIN_ID=0
 
 Raw datasets, MCAP files, converted LeRobot datasets, checkpoints,
 training outputs, caches, and ROS build/install/log directories must not

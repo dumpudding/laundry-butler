@@ -1,75 +1,112 @@
 # Laundry Butler inference GUI
 
-Files to add to `~/laundry-butler`:
+## Canonical layout
+
+Inference implementation:
 
 ```text
 inference/
   inference_gui.py
-  policy_server.py
+  inference_policy_server.py
   piper_openpi_config.py
+```
+
+Launcher:
+
+```text
 gui/
   run_inference_gui.sh
-  run_inference_server.sh
 ```
 
-## Design
+Runtime/local-only state:
 
-The GUI follows the existing data-collection GUI structure: PyQt5, saved window geometry, reduced-rate camera previews, joint rates/liveness, managed subsystem launch controls, and a ROS `MultiThreadedExecutor` with reentrant callback groups.
+```text
+checkpoints/
+logs/inference/
+inference/.venv-ros-client/
+```
 
-The policy server remains a separate process because it runs inside the OpenPI/JAX Python 3.11 environment. The GUI runs in a small Python 3.12 ROS-compatible client venv with `--system-site-packages` and only `openpi-client` added.
+`gui/` contains the launcher. The inference implementation itself belongs under
+`inference/`.
+
+The inference GUI owns the policy-server subprocess and starts/stops it as
+part of the GUI workflow; no separate server launcher is required.
 
 ## Start
-
-Terminal 1:
-
-```bash
-cd ~/laundry-butler
-newgrp vglusers
-./gui/run_inference_server.sh
-```
-
-Terminal 2:
 
 ```bash
 cd ~/laundry-butler
 ./gui/run_inference_gui.sh
 ```
 
-The GUI can start/configure CAN, cameras, and observation-arm nodes itself. If those nodes are already running, it attaches to them and refuses duplicate launches.
-
-## GUI functions
-
-- 3 live camera previews with Hz and message age.
-- Left/right joint values, Hz, and age.
-- `can_left` / `can_right` state, bitrate, RX/TX counters.
-- Policy server TCP health and metadata query.
-- Command-path status; no command publishers exist while idle/dry-inference.
-- One-shot dry inference with no robot motion.
-- Full physical rollout.
-- Default 50 actions per replan at 30 Hz.
-- Sequential joint slew cap of 0.08 rad/step.
-- Gripper slew cap of 0.015 m/step and `[0, 0.08]` command clamp.
-- Hard raw policy jump abort (default 0.35 rad) for gross mismatch.
-- Joint-limit, finite-value, observation-age, arm-age, command-subscriber, and server checks.
-- Live replan/inference timing and raw-vs-published step metrics.
-- 14-D current/raw/published first-target comparison table.
-- `STOP / HOLD` button.
-- Automatic JSONL logs containing each replan's full raw and published action chunks.
-- Debug snapshot saving: all 3 camera PNGs + state/rates/ages JSON.
-- Clean ROS shutdown guard to avoid calling `rcl_shutdown` twice after an earlier shutdown.
-
-## Default checkpoint
-
-`policy_server.py` defaults to:
-
-```text
-~/laundry-butler/checkpoints/piper_pi05_full_v1/15000
-```
-
-Override without editing code:
+The inference launcher defaults to:
 
 ```bash
-LAUNDRY_BUTLER_CHECKPOINT=/path/to/checkpoint ./gui/run_inference_server.sh
+ROS_DOMAIN_ID=0
 ```
 
-Logs go under `inference/logs/`; snapshots under `inference/snapshots/`.
+Override it explicitly when required:
+
+```bash
+ROS_DOMAIN_ID=0 ./gui/run_inference_gui.sh
+```
+
+## Machine-specific path overrides
+
+Tracked files should not need editing just because a workstation path changes.
+
+Supported launcher overrides:
+
+```text
+LAUNDRY_BUTLER_OPENPI_ROOT
+LAUNDRY_BUTLER_CAMERA_WS
+LAUNDRY_BUTLER_PIPER_WS
+LAUNDRY_BUTLER_INFERENCE_VENV
+UV_BIN
+```
+
+Current defaults:
+
+```text
+OpenPI:        /home/laundrybutler/Downloads/openpi-main
+camera_ws:     /home/laundrybutler/camera_ws
+piper_ws:      /home/laundrybutler/piper_ws
+client venv:   inference/.venv-ros-client
+```
+
+## Current working runtime behavior
+
+The August 17 working inference behavior is the baseline. This repository
+cleanup intentionally does not alter the physical rollout/control logic.
+
+Current behavior includes:
+
+- GUI-managed policy-server lifecycle;
+- checkpoint selection;
+- three camera previews;
+- joint/camera health monitoring;
+- dry inference;
+- guarded physical rollout;
+- latest-trajectory Return Home;
+- reduced GUI preview load;
+- no burst catch-up after publish-loop delays;
+- per-command arm-feedback gating;
+- current feedback-grace behavior from `inference/inference_gui.py`.
+
+Changes to timing, stale-feedback thresholds, execution horizon, or command
+gating should be treated as control changes and tested separately from
+repository/path cleanup.
+
+## Local-only files
+
+Do not commit:
+
+```text
+checkpoints/
+inference/.venv-ros-client/
+logs/inference/
+*.pre_*
+```
+
+Do not keep full `.pre_*` copies of tracked Python files in the repository.
+Git history is the source backup.
