@@ -77,5 +77,7 @@ After the root cause is known, add a recording watchdog that marks the affected 
 - human-facing launcher under `gui/`;
 - no motion, enable, reset, homing, replay-to-robot, or inference controls;
 - `/master/joint_left` and `/master/joint_right` excluded;
+- independent targets captured from actual Piper V2 CAN control frames on both arms, with recorded source timestamps and raw-frame provenance;
+- start requires real joint/gripper targets; a command gap over 0.5 seconds stops recording and saves an unusable episode;
 - record locally, validate, then copy elsewhere;
 - generated output ignored by Git.

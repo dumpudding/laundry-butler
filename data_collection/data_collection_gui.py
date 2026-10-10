@@ -24,6 +24,7 @@ from rclpy.qos import qos_profile_sensor_data
 from rosidl_runtime_py.convert import message_to_ordereddict
 from rosidl_runtime_py.utilities import get_message
 from sensor_msgs.msg import CameraInfo, Image, JointState
+from std_msgs.msg import String
 
 from PyQt5.QtCore import QObject, QSettings, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QCloseEvent, QFont, QFontDatabase, QImage, QKeySequence, QPixmap
@@ -63,6 +64,15 @@ from episode_store import (
     read_json,
     update_episode,
     utc_now_iso,
+)
+from demonstration_commands import (
+    COMMAND_TOPICS,
+    COMMAND_TRACE_TOPICS,
+    JOINT_NAMES,
+    CommandAssembler,
+    CommandFrame,
+    PassiveCANReader,
+    command_metadata,
 )
 from preflight import (
     ARM_NODES,
@@ -116,6 +126,8 @@ ARM_SPECS = (
     ("right", "joints", "/puppet/joint_right"),
     ("right", "pose", "/puppet/end_pose_right"),
     ("right", "status", "/piper_right_ctrl_node/arm_status"),
+    ("left", "commands", "/laundry_butler/demonstration/command_left"),
+    ("right", "commands", "/laundry_butler/demonstration/command_right"),
 )
 
 OUTCOME_OPTIONS = (
@@ -153,6 +165,16 @@ class MonitorNode(Node):
         self.arm_text: dict[tuple[str, str, str], str] = {}
         self.dynamic_subscriptions: dict[str, object] = {}
         self.static_subscriptions: list[object] = []
+        self.command_assemblers = {side: CommandAssembler() for side in ("left", "right")}
+        self.command_errors = {side: "" for side in ("left", "right")}
+        self.command_publishers = {
+            side: self.create_publisher(JointState, topic, 50)
+            for side, topic in zip(("left", "right"), COMMAND_TOPICS)
+        }
+        self.command_trace_publishers = {
+            side: self.create_publisher(String, topic, 50)
+            for side, topic in zip(("left", "right"), COMMAND_TRACE_TOPICS)
+        }
 
         image_group = ReentrantCallbackGroup()
         info_group = ReentrantCallbackGroup()
@@ -187,7 +209,7 @@ class MonitorNode(Node):
                 )
 
             for side, kind, topic in ARM_SPECS:
-                if kind != "joints":
+                if kind not in ("joints", "commands"):
                     continue
                 actual_topic = self.source_topic(source, topic)
                 channel = (source, side, kind)
@@ -198,13 +220,63 @@ class MonitorNode(Node):
                     self.create_subscription(
                         JointState,
                         actual_topic,
-                        self._joint_callback(source, side),
+                        self._joint_callback(source, side, kind),
                         qos_profile_sensor_data,
                         callback_group=arm_group,
                     )
                 )
 
         self.dynamic_timer = self.create_timer(1.0, self.ensure_dynamic_subscriptions)
+        self.command_readers = [
+            PassiveCANReader(
+                f"can_{side}",
+                lambda frame, now, side=side: self.capture_command_frame(side, frame, now),
+                lambda error, side=side: self.command_source_error(side, error),
+            )
+            for side in ("left", "right")
+        ]
+        for reader in self.command_readers:
+            reader.start()
+
+    def capture_command_frame(self, side: str, frame: CommandFrame, now: float) -> None:
+        with self.lock:
+            self.command_errors[side] = ""
+            sample = self.command_assemblers[side].feed(frame, now)
+        if sample is None:
+            return
+        message = JointState()
+        message.header.stamp.sec, message.header.stamp.nanosec = divmod(sample.timestamp_ns, 1_000_000_000)
+        message.header.frame_id = f"piper_control_can_{side}"
+        message.name = list(JOINT_NAMES)
+        message.position = list(sample.positions)
+        message.effort = list(sample.efforts)
+        trace = String(data=json.dumps(sample.trace(f"can_{side}"), separators=(",", ":")))
+        self.command_trace_publishers[side].publish(trace)
+        self.command_publishers[side].publish(message)
+
+    def command_source_error(self, side: str, error: str) -> None:
+        with self.lock:
+            self.command_assemblers[side].reset()
+            self.command_errors[side] = error
+
+    def check_live_commands(self) -> Check:
+        now = time.monotonic()
+        with self.lock:
+            problems = {
+                side: self.command_errors[side] or assembler.problem(now)
+                for side, assembler in self.command_assemblers.items()
+            }
+        failures = [f"{side}: {problem}" for side, problem in problems.items() if problem]
+        for topic in COMMAND_TOPICS + COMMAND_TRACE_TOPICS:
+            if self.count_publishers(topic) != 1:
+                failures.append(f"{topic}: expected exactly one capture GUI publisher; close duplicate capture GUIs")
+        if failures:
+            return Check("Demonstration commands", "fail", "; ".join(failures) + ". Activate joint-target teleoperation on both arms and send gripper targets; feedback alone cannot pass.")
+        return Check("Demonstration commands", "pass", "Both arms have fresh CAN joint targets and observed gripper targets")
+
+    def close_command_readers(self) -> None:
+        for reader in self.command_readers:
+            reader.close()
 
     @staticmethod
     def source_topic(source: str, topic: str) -> str:
@@ -238,7 +310,7 @@ class MonitorNode(Node):
 
         return callback
 
-    def _joint_callback(self, source: str, side: str) -> Callable[[JointState], None]:
+    def _joint_callback(self, source: str, side: str, kind: str = "joints") -> Callable[[JointState], None]:
         def callback(message: JointState) -> None:
             names = [short_joint_name(name) for name in message.name]
             positions = [round(float(value), 4) for value in message.position]
@@ -246,7 +318,7 @@ class MonitorNode(Node):
                 text = "  ".join(f"{name}: {value:+.4f}" for name, value in zip(names, positions))
             else:
                 text = "Position: " + format_numeric_list(positions)
-            self.store_arm_sample(source, side, "joints", text)
+            self.store_arm_sample(source, side, kind, text)
 
         return callback
 
@@ -258,7 +330,7 @@ class MonitorNode(Node):
 
         for source in ("live", "viewer"):
             for side, kind, topic in ARM_SPECS:
-                if kind == "joints":
+                if kind in ("joints", "commands"):
                     continue
                 actual_topic = self.source_topic(source, topic)
                 if actual_topic in self.dynamic_subscriptions:
@@ -511,14 +583,17 @@ class ArmPane(QFrame):
     def __init__(self, title: str) -> None:
         super().__init__()
         self.setFrameShape(QFrame.StyledPanel)
+        self.setMinimumWidth(0)
         heading = QLabel(title)
         heading.setProperty("sectionHeading", True)
         self.health = QLabel("No signal")
         self.joints = QLabel("Joints: waiting for data")
         self.pose = QLabel("Pose: waiting for data")
         self.status = QLabel("Status: waiting for data")
-        for label in (self.joints, self.pose, self.status):
+        self.commands = QLabel("Demonstration targets: waiting for teleoperation")
+        for label in (self.joints, self.pose, self.status, self.commands):
             label.setWordWrap(True)
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 6, 8, 6)
@@ -528,6 +603,7 @@ class ArmPane(QFrame):
         header.addWidget(self.health)
         layout.addLayout(header)
         layout.addWidget(self.joints)
+        layout.addWidget(self.commands)
         layout.addWidget(self.pose)
         layout.addWidget(self.status)
 
@@ -535,6 +611,7 @@ class ArmPane(QFrame):
         joint = values.get("joints", {})
         pose = values.get("pose", {})
         status = values.get("status", {})
+        commands = values.get("commands", {})
         ages = [float(item.get("age", float("inf"))) for item in (joint, pose, status) if item]
         best_age = min(ages) if ages else float("inf")
         if best_age > 3.0:
@@ -548,6 +625,26 @@ class ArmPane(QFrame):
         self.joints.setText("Joints: " + str(joint.get("text", "Waiting for data")))
         self.pose.setText("Pose: " + str(pose.get("text", "Waiting for data")))
         self.status.setText("Status: " + str(status.get("text", "Waiting for data")))
+        command_rate = float(commands.get("rate", 0.0))
+        self.commands.setText(f"Demonstration targets ({command_rate:.1f} Hz): " + str(commands.get("text", "Waiting for teleoperation")))
+        self.commands.setProperty("health", "pass" if float(commands.get("age", float("inf"))) <= 0.5 else "fail")
+        refresh_style(self.commands)
+        self.fit_text_labels()
+
+    def fit_text_labels(self) -> None:
+        # QSplitter can otherwise compress wrapped labels to one line and
+        # hide later joint/gripper values despite setWordWrap(True).
+        width = max(100, self.width() - 20)
+        for label in (self.joints, self.pose, self.status, self.commands):
+            label.setMinimumHeight(label.heightForWidth(width))
+        layout = self.layout()
+        layout.activate()
+        self.setMinimumHeight(layout.minimumSize().height())
+        self.updateGeometry()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.fit_text_labels()
 
 
 def refresh_style(widget: QWidget) -> None:
@@ -640,6 +737,7 @@ class Window(QMainWindow):
         self.recorder: Optional[ManagedProcess] = None
         self.playback: Optional[ManagedProcess] = None
         self.current_episode: Optional[EpisodePaths] = None
+        self.validation_episode: Optional[EpisodePaths] = None
         self.current_playback_root: Optional[Path] = None
         self.recording_started_monotonic = 0.0
         self.playback_started_monotonic = 0.0
@@ -649,6 +747,7 @@ class Window(QMainWindow):
         self.playback_paused = False
         self.stop_disposition = "usable"
         self.last_preflight: Optional[Report] = None
+        self.command_capture_error: str | None = None
         self.preflight_valid_until = 0.0
         self.worker_active = False
         self.pending_record_after_readiness = False
@@ -684,11 +783,20 @@ class Window(QMainWindow):
             "right": ArmPane("Right arm observation"),
         }
         arm_splitter = QSplitter(Qt.Horizontal)
-        arm_splitter.addWidget(self.arm_panes["left"])
-        arm_splitter.addWidget(self.arm_panes["right"])
+        for side in ("left", "right"):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setMinimumHeight(140)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setWidget(self.arm_panes[side])
+            arm_splitter.addWidget(scroll)
         arm_splitter.setChildrenCollapsible(False)
         arm_group = QGroupBox("Arm observation")
         arm_layout = QVBoxLayout(arm_group)
+        self.command_health_label = QLabel("Demonstration commands: waiting for teleoperation")
+        self.command_health_label.setWordWrap(True)
+        arm_layout.addWidget(self.command_health_label)
         arm_layout.addWidget(arm_splitter)
 
         setup_group = self.build_setup_group()
@@ -1035,6 +1143,10 @@ class Window(QMainWindow):
         arms = snapshot["arms"][self.active_source]
         for side, pane in self.arm_panes.items():
             pane.update_observation(arms.get(side, {}), self.active_source)
+        check = self.node.check_live_commands()
+        self.command_health_label.setText(f"Demonstration commands: {check.detail}")
+        self.command_health_label.setProperty("health", check.status)
+        refresh_style(self.command_health_label)
 
     def ros_nodes(self) -> set[str]:
         try:
@@ -1192,6 +1304,7 @@ class Window(QMainWindow):
                 OUTPUT_ROOT,
                 MIN_FREE_GB,
                 topic_liveness_check=self.node.check_live_topic_liveness,
+                command_liveness_check=self.node.check_live_commands,
             ),
         )
 
@@ -1245,12 +1358,23 @@ class Window(QMainWindow):
         elif name == "validation":
             validation = result
             assert isinstance(validation, dict)
+            validated_paths = paths_for_episode(Path(str(validation["bag_directory"])).parent)
+            if validation.get("status") == "fail":
+                update_episode(validated_paths, operator_disposition="unusable", validation_status="fail")
+            else:
+                # Default kept episodes to success only after validation; a
+                # review edit made while validation ran is still preserved.
+                update_episode(validated_paths, validation_status=validation.get("status"))
+            self.validation_episode = None
             self.statusBar().showMessage(f"Validation: {validation.get('status', 'unknown')}")
             self.refresh_episodes()
             self.refresh_subsystem_state()
             QTimer.singleShot(250, lambda: self.run_preflight_async(automatic=True))
 
     def on_worker_failed(self, name: str, error: str) -> None:
+        if name == "validation" and self.validation_episode is not None:
+            update_episode(self.validation_episode, operator_disposition="unusable", validation_error=error)
+            self.validation_episode = None
         self.worker_active = False
         self.pending_record_after_readiness = False
         idle = self.recorder is None and self.playback is None
@@ -1284,6 +1408,7 @@ class Window(QMainWindow):
             "arm_mapping": {"left": "can_left / LARM", "right": "can_right / RARM"},
             "recorded_topics": list(REQUIRED_TOPICS),
             "software_revision": git_revision(REPOSITORY_ROOT),
+            "demonstration_commands": command_metadata(),
         }
 
     def start_episode(self) -> None:
@@ -1294,6 +1419,7 @@ class Window(QMainWindow):
             or not self.last_preflight.passed
             or time.monotonic() > self.preflight_valid_until
             or self.node.check_live_topic_liveness().status == "fail"
+            or self.node.check_live_commands().status == "fail"
         ):
             self.pending_record_after_readiness = True
             self.run_preflight_async(automatic=True)
@@ -1343,6 +1469,7 @@ class Window(QMainWindow):
         self.recording_started_monotonic = time.monotonic()
         self.stop_disposition = "usable"
         self.preflight_valid_until = 0.0
+        self.command_capture_error = None
         self.start_episode_btn.setEnabled(False)
         self.stop_keep_btn.setEnabled(True)
         self.stop_unusable_btn.setEnabled(True)
@@ -1353,7 +1480,7 @@ class Window(QMainWindow):
     def request_recorder_stop(self, disposition: str) -> None:
         if self.recorder is None:
             return
-        self.stop_disposition = disposition
+        self.stop_disposition = "unusable" if self.command_capture_error else disposition
         self.request_process_stop(self.recorder)
         self.stop_keep_btn.setEnabled(False)
         self.stop_unusable_btn.setEnabled(False)
@@ -1387,6 +1514,7 @@ class Window(QMainWindow):
             self.playback_label.setText(f"{state}: {elapsed:.1f} s{total}\n{self.current_playback_root.name}")
 
     def check_processes(self) -> None:
+        self.check_recording_commands()
         self.check_recorder()
         self.check_playback()
         subsystem_changed = False
@@ -1404,6 +1532,19 @@ class Window(QMainWindow):
                 self.invalidate_readiness()
         if subsystem_changed:
             self.refresh_subsystem_state()
+
+    def check_recording_commands(self) -> None:
+        if self.recorder is None or self.recorder.stop_requested_at > 0.0:
+            return
+        check = self.node.check_live_commands()
+        if check.status != "fail":
+            return
+        self.command_capture_error = check.detail
+        if self.current_episode is not None:
+            update_episode(self.current_episode, command_capture_error=check.detail, command_capture_failed_at=utc_now_iso())
+        self.request_recorder_stop("unusable")
+        self.preflight_result.setPlainText("Recording stopped: demonstration commands were lost.\n" + check.detail)
+        self.statusBar().showMessage("Command capture lost; saving episode as unusable")
 
     def check_recorder(self) -> None:
         if self.recorder is None:
@@ -1433,10 +1574,12 @@ class Window(QMainWindow):
             recording_end=utc_now_iso(),
             duration_seconds=elapsed,
             recorder_exit_code=code,
+            outcome="not_assessed",
         )
         self.refresh_episodes(select_path=paths.root)
         self.statusBar().showMessage("Validating recorded episode…")
         self.worker_active = True
+        self.validation_episode = paths
         self.preflight_btn.setEnabled(False)
         self.start_worker("validation", lambda: validate_episode(paths.bag, paths.validation_json, paths.recorder_log))
 
@@ -1840,6 +1983,7 @@ def main() -> int:
     try:
         return int(app.exec_())
     finally:
+        node.close_command_readers()
         executor.shutdown()
         node.destroy_node()
         if rclpy.ok():
