@@ -6,6 +6,7 @@ This interface records, reviews, and replays synchronized Laundry Butler demonst
 
 - responsive split-pane layout that scales from 1100×700 upward;
 - saved window and splitter geometry;
+- episode list using half the review pane by default, with a wider draggable divider and scrollable review/playback controls;
 - Roboto Mono Bold request with a monospace fallback when the font is unavailable;
 - three reduced-rate camera previews;
 - live left/right arm observation for joints, end pose, status, rate, and liveness;
@@ -30,7 +31,7 @@ Not implemented yet:
 
 ```bash
 cd /home/laundrybutler/laundry-butler
-./gui/run_data_collection_gui.sh
+./gui/data_collection_gui.sh
 ```
 
 The launcher sources ROS 2 Jazzy, the camera workspace, and the Piper workspace. It defaults to `ROS_DOMAIN_ID=88`.
@@ -57,6 +58,8 @@ The former manual “preflight” is now presented as **readiness**. It checks:
 
 The checks are still necessary because a rosbag process can start successfully while recording missing topics or writing to an unsuitable disk. The user no longer needs to press the readiness button before every episode: the GUI rechecks automatically when required.
 
+The GUI checks the most recent camera-info, joint, and arm-status samples received by its existing live subscriptions. All seven topics must have a sample no more than 3 seconds old. Playback samples do not count. This avoids creating temporary `ros2 topic echo` subscriptions that can time out during discovery while the live previews continue updating. Freshness is checked again immediately before recording, even when the other readiness checks are still valid. Standalone checks retain the CLI subscription fallback.
+
 ## Workflow
 
 1. Put both arms in the manufacturer-required horizontal/reset pose.
@@ -70,6 +73,18 @@ The checks are still necessary because a rosbag process can start successfully w
 9. Stop and keep, or stop and mark unusable.
 10. Select the episode to edit outcome, disposition, and notes.
 11. Play the episode to review synchronized camera and arm topics.
+
+Under the current collection policy, **Stop and keep** (`A`) defaults a completed, usable episode's outcome to **Success**. Already assessed outcomes and explicit review edits are preserved. Unusable episodes and recordings that fail to complete do not receive this default.
+
+## Recording shortcuts
+
+| Key | Action |
+| --- | --- |
+| `W` | Start episode |
+| `A` | Stop and keep |
+| `D` | Stop and mark unusable |
+
+Press the letter without Ctrl or Alt while the collection window is active. Shortcuts follow the corresponding button's enabled state, including readiness checks before starting. They do not activate while editing text, using a dropdown, or interacting with a dialog. Holding a key does not repeat the action. Marking an episode unusable still saves the recording and sets its disposition to `unusable`.
 
 ## Recorded topics
 
@@ -92,11 +107,27 @@ The checks are still necessary because a rosbag process can start successfully w
 
 ## Output
 
-Default root:
+The normal `./gui/data_collection_gui.sh` launcher saves to the shared SSD:
 
 ```text
-/home/laundrybutler/laundry-butler/data_collection/output
+/srv/aloha-shared/dxx_data/data
 ```
+
+The launcher's `/home/laundrybutler/Aloha Shared SSD` path is a symlink to
+`/srv/aloha-shared`. Set `LAUNDRY_BUTLER_DATA_ROOT` to use a different root.
+Running `data_collection_gui.py` directly without this environment variable
+falls back to `/home/laundrybutler/laundry-butler/data_collection/output`.
+
+New recordings use MCAP's native **lossless Zstd chunk compression**, with
+the settings in `config/recording/mcap_zstd.yaml`. The image pixels, 30 Hz
+camera streams, 200 Hz arm streams, topics, and message timestamps are preserved.
+Indexes and chunk CRCs remain enabled so existing replay and conversion tools
+can read the bags normally. Existing recordings are not rewritten.
+
+To override the storage settings, set `LAUNDRY_BUTLER_MCAP_STORAGE_CONFIG` to
+an MCAP writer YAML file before launching. Each episode saves and uses its own
+`mcap_storage.yaml` copy, referenced by `episode.json.recording_storage`.
+Restart an already-running collection GUI to load this change.
 
 Episode structure:
 
@@ -106,6 +137,7 @@ episode_<timestamp>_<task>/
 │   ├── *.mcap
 │   └── metadata.yaml
 ├── episode.json
+├── mcap_storage.yaml
 ├── validation.json
 └── recorder.log
 ```
@@ -113,7 +145,7 @@ episode_<timestamp>_<task>/
 The MCAP content is not edited. Review properties are written into `episode.json`. “Delete episode” moves the full directory into:
 
 ```text
-data_collection/output/.trash/
+/srv/aloha-shared/dxx_data/data/.trash/
 ```
 
 ## Playback isolation

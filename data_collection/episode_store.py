@@ -83,6 +83,14 @@ def create_episode(
 def update_episode(paths: EpisodePaths, **updates: Any) -> dict[str, Any]:
     payload = read_json(paths.episode_json)
     payload.update(updates)
+    # Under the current collection policy, kept demonstrations are successful.
+    if (
+        "outcome" not in updates
+        and payload.get("status") == "recorded"
+        and payload.get("operator_disposition") == "usable"
+        and payload.get("outcome") in (None, "", "not_assessed")
+    ):
+        payload["outcome"] = "success"
     payload["schema_version"] = SCHEMA_VERSION
     payload["last_edited_at"] = utc_now_iso()
     write_json_atomic(paths.episode_json, payload)

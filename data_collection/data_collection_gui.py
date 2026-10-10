@@ -26,7 +26,7 @@ from rosidl_runtime_py.utilities import get_message
 from sensor_msgs.msg import CameraInfo, Image, JointState
 
 from PyQt5.QtCore import QObject, QSettings, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QCloseEvent, QFont, QFontDatabase, QImage, QPixmap
+from PyQt5.QtGui import QCloseEvent, QFont, QFontDatabase, QImage, QKeySequence, QPixmap
 from PyQt5.QtWidgets import (
     QApplication,
     QComboBox,
@@ -42,6 +42,7 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
+    QShortcut,
     QSizePolicy,
     QSplitter,
     QStatusBar,
@@ -63,7 +64,15 @@ from episode_store import (
     update_episode,
     utc_now_iso,
 )
-from preflight import ARM_NODES, CAMERA_NODES, REQUIRED_TOPICS, Report, run_preflight
+from preflight import (
+    ARM_NODES,
+    CAMERA_NODES,
+    REQUIRED_TOPICS,
+    Check,
+    Report,
+    check_received_topic_liveness,
+    run_preflight,
+)
 from validation import validate_episode
 
 APP_DIR = Path(__file__).resolve().parent
@@ -71,6 +80,10 @@ REPOSITORY_ROOT = APP_DIR.parent
 OUTPUT_ROOT = Path(
     os.environ.get("LAUNDRY_BUTLER_DATA_ROOT", str(APP_DIR / "output"))
 ).expanduser()
+MCAP_STORAGE_CONFIG = Path(
+    os.environ.get("LAUNDRY_BUTLER_MCAP_STORAGE_CONFIG")
+    or str(REPOSITORY_ROOT / "config" / "recording" / "mcap_zstd.yaml")
+).expanduser().resolve()
 CAMERA_LAUNCH = Path(
     os.environ.get(
         "LAUNDRY_BUTLER_CAMERA_LAUNCH",
@@ -134,11 +147,12 @@ class MonitorNode(Node):
         self.last_preview: dict[tuple[str, str], float] = {}
         self.camera_arrivals: dict[tuple[str, str], deque[float]] = {}
         self.camera_last: dict[tuple[str, str], float] = {}
+        self.camera_info_last: dict[tuple[str, str], float] = {}
         self.arm_arrivals: dict[tuple[str, str, str], deque[float]] = {}
         self.arm_last: dict[tuple[str, str, str], float] = {}
         self.arm_text: dict[tuple[str, str, str], str] = {}
         self.dynamic_subscriptions: dict[str, object] = {}
-        self._subscriptions = []
+        self.static_subscriptions: list[object] = []
 
         image_group = ReentrantCallbackGroup()
         info_group = ReentrantCallbackGroup()
@@ -152,7 +166,8 @@ class MonitorNode(Node):
                 self.last_preview[channel] = 0.0
                 self.camera_arrivals[channel] = deque()
                 self.camera_last[channel] = 0.0
-                self._subscriptions.append(
+                self.camera_info_last[channel] = 0.0
+                self.static_subscriptions.append(
                     self.create_subscription(
                         Image,
                         actual_image,
@@ -161,7 +176,7 @@ class MonitorNode(Node):
                         callback_group=image_group,
                     )
                 )
-                self._subscriptions.append(
+                self.static_subscriptions.append(
                     self.create_subscription(
                         CameraInfo,
                         actual_info,
@@ -179,7 +194,7 @@ class MonitorNode(Node):
                 self.arm_arrivals[channel] = deque()
                 self.arm_last[channel] = 0.0
                 self.arm_text[channel] = "Waiting for data"
-                self._subscriptions.append(
+                self.static_subscriptions.append(
                     self.create_subscription(
                         JointState,
                         actual_topic,
@@ -217,9 +232,9 @@ class MonitorNode(Node):
 
     def _camera_info_callback(self, source: str, key: str) -> Callable[[CameraInfo], None]:
         def callback(_message: CameraInfo) -> None:
-            # Keep a subscriber on camera_info for graph visibility, but calculate
-            # the displayed stream rate from image messages only.
-            _ = source, key
+            # Track receipt for readiness; preview rates still use image messages.
+            with self.lock:
+                self.camera_info_last[(source, key)] = time.monotonic()
 
         return callback
 
@@ -292,6 +307,21 @@ class MonitorNode(Node):
             self.arm_text[channel] = text
             trim(arrivals, now)
 
+    def check_live_topic_liveness(self) -> Check:
+        with self.lock:
+            last_received = {
+                info_topic: self.camera_info_last.get(("live", key), 0.0)
+                for key, _title, _image_topic, info_topic in CAMERAS
+            }
+            last_received.update(
+                {
+                    topic: self.arm_last.get(("live", side, kind), 0.0)
+                    for side, kind, topic in ARM_SPECS
+                    if kind in ("joints", "status")
+                }
+            )
+        return check_received_topic_liveness(last_received)
+
     def clear_source(self, source: str) -> None:
         now = time.monotonic()
         with self.lock:
@@ -300,6 +330,7 @@ class MonitorNode(Node):
                     continue
                 self.camera_arrivals[channel].clear()
                 self.camera_last[channel] = 0.0
+                self.camera_info_last[channel] = 0.0
                 self.last_preview[channel] = 0.0
             for channel in list(self.arm_arrivals):
                 if channel[0] != source:
@@ -699,6 +730,7 @@ class Window(QMainWindow):
         self.setCentralWidget(central)
 
         self.connect_signals()
+        self.install_record_shortcuts()
         self.install_timers()
 
         OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
@@ -762,11 +794,14 @@ class Window(QMainWindow):
         return group
 
     def build_record_group(self) -> QGroupBox:
-        self.start_episode_btn = QPushButton("Start episode")
+        self.start_episode_btn = QPushButton("Start episode [W]")
         self.start_episode_btn.setObjectName("primaryButton")
+        self.start_episode_btn.setToolTip("W: start recording when readiness checks pass.")
         self.start_episode_btn.setEnabled(False)
-        self.stop_keep_btn = QPushButton("Stop and keep")
-        self.stop_unusable_btn = QPushButton("Stop and mark unusable")
+        self.stop_keep_btn = QPushButton("Stop and keep [A]")
+        self.stop_keep_btn.setToolTip("A: stop recording and keep the episode.")
+        self.stop_unusable_btn = QPushButton("Stop and mark unusable [D]")
+        self.stop_unusable_btn.setToolTip("D: stop recording and mark the episode unusable.")
         self.stop_unusable_btn.setObjectName("warningButton")
         self.stop_keep_btn.setEnabled(False)
         self.stop_unusable_btn.setEnabled(False)
@@ -858,12 +893,22 @@ class Window(QMainWindow):
         editor_layout.setContentsMargins(0, 0, 0, 0)
         editor_layout.addWidget(property_box)
         editor_layout.addWidget(playback_box)
+        editor_layout.addStretch(1)
+
+        editor_scroll = QScrollArea()
+        editor_scroll.setWidgetResizable(True)
+        editor_scroll.setFrameShape(QFrame.NoFrame)
+        editor_scroll.setWidget(editor_container)
 
         viewer_splitter = QSplitter(Qt.Vertical)
         viewer_splitter.addWidget(self.episodes_table)
-        viewer_splitter.addWidget(editor_container)
+        viewer_splitter.addWidget(editor_scroll)
         viewer_splitter.setChildrenCollapsible(False)
-        viewer_splitter.setSizes([420, 260])
+        viewer_splitter.setHandleWidth(8)
+        viewer_splitter.handle(1).setToolTip("Drag up or down to resize the episode list.")
+        viewer_splitter.setStretchFactor(0, 1)
+        viewer_splitter.setStretchFactor(1, 1)
+        viewer_splitter.setSizes([400, 400])
         self.viewer_splitter = viewer_splitter
 
         group = QGroupBox("Episodes")
@@ -895,6 +940,30 @@ class Window(QMainWindow):
         self.pause_btn.clicked.connect(self.toggle_playback_pause)
         self.stop_playback_btn.clicked.connect(self.stop_playback)
 
+    def install_record_shortcuts(self) -> None:
+        self.record_shortcuts: list[QShortcut] = []
+        for key, button in (
+            ("W", self.start_episode_btn),
+            ("A", self.stop_keep_btn),
+            ("D", self.stop_unusable_btn),
+        ):
+            shortcut = QShortcut(QKeySequence(key), self)
+            shortcut.setContext(Qt.WindowShortcut)
+            shortcut.setAutoRepeat(False)
+            shortcut.activated.connect(lambda target=button: self.activate_record_shortcut(target))
+            self.record_shortcuts.append(shortcut)
+
+    def activate_record_shortcut(self, button: QPushButton) -> None:
+        if QApplication.activeModalWidget() is not None or QApplication.activePopupWidget() is not None:
+            return
+        focus = QApplication.focusWidget()
+        if isinstance(focus, (QLineEdit, QTextEdit)) and not focus.isReadOnly():
+            return
+        if isinstance(focus, QComboBox):
+            return
+        if button.isEnabled():
+            button.click()
+
     def install_timers(self) -> None:
         self.health_timer = QTimer(self)
         self.health_timer.timeout.connect(self.refresh_health)
@@ -913,12 +982,16 @@ class Window(QMainWindow):
         for key, splitter in (
             ("mainSplitter", self.main_splitter),
             ("lowerSplitter", self.lower_splitter),
-            ("viewerSplitter", self.viewer_splitter),
+            ("viewerSplitterV3", self.viewer_splitter),
             ("cameraSplitter", self.camera_splitter),
         ):
             state = self.settings.value(key)
             if state is not None:
                 splitter.restoreState(state)
+            elif splitter is self.viewer_splitter:
+                # Apply the equal split after the window has its actual size.
+                splitter.setSizes([400, 400])
+        self.viewer_splitter.setHandleWidth(8)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -932,7 +1005,15 @@ class Window(QMainWindow):
         font = QFont(select_font_family(), point_size, QFont.Bold)
         self.setFont(font)
         self.start_episode_btn.setMinimumHeight(max(44, int(point_size * 4.5)))
-        self.episodes_table.verticalHeader().setDefaultSectionSize(max(28, point_size * 3))
+        row_height = max(28, point_size * 3)
+        self.episodes_table.verticalHeader().setDefaultSectionSize(row_height)
+        self.episodes_table.setMinimumHeight(
+            self.episodes_table.horizontalHeader().sizeHint().height()
+            + row_height * 2
+            + 2 * self.episodes_table.frameWidth()
+            + self.episodes_table.horizontalScrollBar().sizeHint().height()
+        )
+        self.viewer_splitter.widget(1).setMinimumHeight(self.episodes_table.minimumHeight())
 
     def on_frame(self, source: str, key: str, image: QImage) -> None:
         if source == self.active_source:
@@ -1105,7 +1186,14 @@ class Window(QMainWindow):
         if not automatic or not self.preflight_result.toPlainText():
             self.preflight_result.setPlainText("Running read-only readiness checks…")
         self.statusBar().showMessage("Checking readiness")
-        self.start_worker("preflight", lambda: run_preflight(OUTPUT_ROOT, MIN_FREE_GB))
+        self.start_worker(
+            "preflight",
+            lambda: run_preflight(
+                OUTPUT_ROOT,
+                MIN_FREE_GB,
+                topic_liveness_check=self.node.check_live_topic_liveness,
+            ),
+        )
 
     def start_worker(self, name: str, function: Callable[[], object]) -> None:
         def target() -> None:
@@ -1201,21 +1289,42 @@ class Window(QMainWindow):
     def start_episode(self) -> None:
         if self.recorder is not None or self.playback is not None or self.worker_active:
             return
-        if self.last_preflight is None or not self.last_preflight.passed or time.monotonic() > self.preflight_valid_until:
+        if (
+            self.last_preflight is None
+            or not self.last_preflight.passed
+            or time.monotonic() > self.preflight_valid_until
+            or self.node.check_live_topic_liveness().status == "fail"
+        ):
             self.pending_record_after_readiness = True
             self.run_preflight_async(automatic=True)
             return
         metadata = self.metadata()
         if metadata is None:
             return
+        try:
+            storage_config = MCAP_STORAGE_CONFIG.read_bytes()
+        except OSError as exc:
+            QMessageBox.critical(self, "Could not load recording settings", str(exc))
+            return
         paths = create_episode(
             OUTPUT_ROOT,
             task=str(metadata["task"]),
-            metadata={**metadata, "recording_start": utc_now_iso(), "preflight": self.last_preflight.to_dict()},
+            metadata={
+                **metadata,
+                "recording_start": utc_now_iso(),
+                "preflight": self.last_preflight.to_dict(),
+                "recording_storage": {"storage_id": "mcap", "config_file": "mcap_storage.yaml"},
+            },
         )
-        command = ["ros2", "bag", "record", "-s", "mcap", "-o", str(paths.bag), "--topics", *REQUIRED_TOPICS]
+        episode_storage_config = paths.root / "mcap_storage.yaml"
+        command = [
+            "ros2", "bag", "record", "-s", "mcap", "-o", str(paths.bag),
+            "--storage-config-file", str(episode_storage_config),
+            "--topics", *REQUIRED_TOPICS,
+        ]
         log_handle = paths.recorder_log.open("w", encoding="utf-8", buffering=1)
         try:
+            episode_storage_config.write_bytes(storage_config)
             process = subprocess.Popen(
                 command,
                 stdout=log_handle,
@@ -1667,7 +1776,7 @@ class Window(QMainWindow):
         self.settings.setValue("geometry", self.saveGeometry())
         self.settings.setValue("mainSplitter", self.main_splitter.saveState())
         self.settings.setValue("lowerSplitter", self.lower_splitter.saveState())
-        self.settings.setValue("viewerSplitter", self.viewer_splitter.saveState())
+        self.settings.setValue("viewerSplitterV3", self.viewer_splitter.saveState())
         self.settings.setValue("cameraSplitter", self.camera_splitter.saveState())
         event.accept()
 
