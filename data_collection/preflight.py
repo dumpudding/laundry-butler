@@ -7,9 +7,10 @@ import concurrent.futures
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Callable, Iterable, Mapping
 
 CAMERA_NODES = {
     "/camera_f/camera_f",
@@ -48,6 +49,8 @@ LIGHTWEIGHT_LIVENESS_TOPICS = (
     "/piper_left_ctrl_node/arm_status",
     "/piper_right_ctrl_node/arm_status",
 )
+
+LIVENESS_MAX_AGE_SECONDS = 3.0
 
 ISOLATED_COMMAND_TOPICS = (
     "/laundry_butler/observation_only/left/pos_cmd",
@@ -93,12 +96,17 @@ class Report:
         }
 
 
-def run_preflight(output_root: Path, minimum_free_gb: float = 20.0) -> Report:
+def run_preflight(
+    output_root: Path,
+    minimum_free_gb: float = 20.0,
+    *,
+    topic_liveness_check: Callable[[], Check] | None = None,
+) -> Report:
     checks = [
         check_dependencies(),
         check_nodes(),
         check_topics(),
-        check_topic_liveness(),
+        check_topic_liveness() if topic_liveness_check is None else topic_liveness_check(),
         check_can("can_left"),
         check_can("can_right"),
         check_command_isolation(),
@@ -240,6 +248,32 @@ def _topic_alive(
         detail += ": " + output[-200:]
 
     return topic, False, detail
+
+
+def check_received_topic_liveness(
+    last_received: Mapping[str, float],
+    maximum_age_seconds: float = LIVENESS_MAX_AGE_SECONDS,
+    *,
+    now: float | None = None,
+) -> Check:
+    """Require recent live samples from the GUI's existing subscriptions."""
+    now = time.monotonic() if now is None else now
+    failures: list[str] = []
+    for topic in LIGHTWEIGHT_LIVENESS_TOPICS:
+        received_at = last_received.get(topic, 0.0)
+        if received_at <= 0.0:
+            failures.append(f"{topic}: no live sample received")
+            continue
+        age = now - received_at
+        if not 0.0 <= age <= maximum_age_seconds:
+            failures.append(f"{topic}: last live sample {age:.1f} s ago")
+    if failures:
+        return Check("Topic liveness", "fail", "; ".join(failures))
+    return Check(
+        "Topic liveness",
+        "pass",
+        f"GUI received camera info, joint, and arm-status samples within {maximum_age_seconds:.1f} s",
+    )
 
 
 def check_topic_liveness() -> Check:

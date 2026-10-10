@@ -76,6 +76,48 @@ class EpisodeStoreTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 move_episode_to_trash(outside, root)
 
+    def test_completed_usable_defaults_to_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = create_episode(
+                Path(temporary), task="shirt folding", metadata={"outcome": "not_assessed"}
+            )
+            before = json.loads(paths.episode_json.read_text())
+            self.assertEqual(before["outcome"], "not_assessed")
+            result = update_episode(paths, status="recorded", operator_disposition="usable")
+            self.assertEqual(result["outcome"], "success")
+            self.assertEqual(list_episodes(Path(temporary))[0]["outcome"], "success")
+
+    def test_unusable_and_incomplete_recordings_keep_unassessed_outcome(self) -> None:
+        for status, disposition in (
+            ("recording", "usable"),
+            ("recorder_failed", "usable"),
+            ("recorder_start_failed", "usable"),
+            ("recorded", "unusable"),
+            ("recorded", "needs_review"),
+        ):
+            with self.subTest(status=status, disposition=disposition), tempfile.TemporaryDirectory() as temporary:
+                paths = create_episode(
+                    Path(temporary), task="shirt folding", metadata={"outcome": "not_assessed"}
+                )
+                result = update_episode(paths, status=status, operator_disposition=disposition)
+                self.assertEqual(result["outcome"], "not_assessed")
+
+    def test_usable_default_preserves_assessed_outcomes(self) -> None:
+        for outcome in ("success", "partial", "failure"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
+                paths = create_episode(Path(temporary), task="shirt folding", metadata={"outcome": outcome})
+                result = update_episode(paths, status="recorded", operator_disposition="usable")
+                self.assertEqual(result["outcome"], outcome)
+
+    def test_explicit_review_can_override_the_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = create_episode(Path(temporary), task="shirt folding", metadata={"outcome": "not_assessed"})
+            update_episode(paths, status="recorded", operator_disposition="usable")
+            for outcome in ("failure", "partial", "not_assessed"):
+                with self.subTest(outcome=outcome):
+                    result = update_episode(paths, outcome=outcome, notes="Manual review")
+                    self.assertEqual(result["outcome"], outcome)
+
 
 if __name__ == "__main__":
     unittest.main()

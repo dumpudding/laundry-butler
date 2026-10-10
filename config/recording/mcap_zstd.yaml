@@ -1,0 +1,10 @@
+# Lossless chunk compression for the three 640x480 RGB streams at 30 Hz.
+# Keep indexes and chunk CRCs for normal replay, conversion, and integrity checks.
+compression: Zstd
+compressionLevel: Fast
+chunkSize: 4194304
+noChunking: false
+noMessageIndex: false
+noSummary: false
+noChunkCRC: false
+forceCompression: false
