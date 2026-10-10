@@ -108,16 +108,33 @@ Recorded topics:
   /puppet/end_pose_right
   /piper_left_ctrl_node/arm_status
   /piper_right_ctrl_node/arm_status
+  /laundry_butler/demonstration/command_left
+  /laundry_butler/demonstration/command_right
+  /laundry_butler/demonstration/source_left
+  /laundry_butler/demonstration/source_right
 
 Do not use:
 
   /master/joint_left
   /master/joint_right
 
-The authoritative training joint data come from:
+The authoritative measured observation joint data come from:
 
   /puppet/joint_left
   /puppet/joint_right
+
+For new episodes, independent actions come from the demonstration/command_*
+topics, captured from Piper V2 CAN control frames without sending commands.
+Each side is a JointState [joint0..5 radians, joint6 commanded gripper metres].
+The demonstration/source_* JSON topics preserve each source frame and its
+kernel receive timestamp. Do not substitute observation.state for action.
+Legacy episodes without these streams have no independently recorded action;
+keep any state-derived label policy explicit when using them.
+
+The GUI blocks start without fresh joint-target teleoperation on both arms
+and observed initial gripper targets. A joint-command gap over 0.5 seconds
+stops recording and marks it unusable. Last observed gripper targets are held
+until new commands; reconnect/gaps invalidate the initial gripper context.
 
 Expected recording rates:
 - cameras: approximately 30 Hz;
@@ -199,6 +216,7 @@ Do not add an HDF5 intermediate.
 The LeRobot dataset must store absolute joint values:
 - observation.state: current absolute 14D robot state;
 - action: future absolute 14D joint targets before OpenPI transforms.
+- New recorded target streams supply action; measured state remains observation.
 
 Images:
 - front camera;

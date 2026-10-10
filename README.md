@@ -63,7 +63,7 @@ sudo apt install python3-pyqt5 ros-jazzy-rosbag2-storage-mcap
 3. Keep the labeled left/right USB and CAN connections unchanged.
 4. Keep the emergency stop accessible.
 5. Start or attach to the cameras and observation-only arm nodes.
-6. Confirm all camera and arm streams are live.
+6. Activate leader/handheld joint-target teleoperation, send initial gripper targets on both arms, and confirm the observation and demonstration-target streams.
 7. Use initial state `level_1_spread`.
 8. Use the instruction `Fold the shirt.`
 9. Start the episode; readiness is checked automatically.
@@ -102,9 +102,18 @@ Recorded topics:
 /puppet/end_pose_right
 /piper_left_ctrl_node/arm_status
 /piper_right_ctrl_node/arm_status
+/laundry_butler/demonstration/command_left
+/laundry_butler/demonstration/command_right
+/laundry_butler/demonstration/source_left
+/laundry_butler/demonstration/source_right
 ```
 
 `/master/joint_left` and `/master/joint_right` are intentionally excluded.
+The GUI records independent joint/gripper targets from receive-only CAN
+control-frame monitoring instead. It blocks recording without both real
+target streams and saves a command interruption as an unusable episode.
+See [command capture and validation](data_collection/README.md#recorded-topics)
+for the source-frame format, timestamps, units, and legacy-episode handling.
 
 The current external dataset root is:
 
@@ -123,7 +132,9 @@ The physical state and action representation is 14D:
  right joint0..5, right gripper]
 ```
 
-Arm joints are radians. Grippers are measured openings in metres.
+Arm joints are radians. Gripper openings are metres. Measured state comes
+from `/puppet/joint_*`; new demonstration actions come from
+`/laundry_butler/demonstration/command_*`, including commanded gripper openings.
 
 LeRobot stores absolute state and action values. OpenPI converts only the
 12 arm joints to actions relative to the current state and converts them

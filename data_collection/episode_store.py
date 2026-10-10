@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 EPISODE_PREFIX = "episode_"
 TRASH_DIR_NAME = ".trash"
 

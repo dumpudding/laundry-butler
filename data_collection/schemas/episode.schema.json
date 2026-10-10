@@ -41,6 +41,19 @@
       "items": {"type": "string"},
       "uniqueItems": true
     },
+    "demonstration_commands": {
+      "type": "object",
+      "required": ["source", "topics", "provenance_topics", "layout", "joint_unit", "gripper_unit"],
+      "properties": {
+        "source": {"const": "socketcan_control_frames_v1"},
+        "topics": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+        "provenance_topics": {"type": "array", "items": {"type": "string"}, "minItems": 2},
+        "layout": {"type": "string"},
+        "joint_unit": {"const": "radian"},
+        "gripper_unit": {"const": "metre"}
+      }
+    },
+    "command_capture_error": {"type": "string"},
     "recording_start": {"type": "string", "format": "date-time"},
     "recording_end": {"type": "string", "format": "date-time"},
     "duration_seconds": {"type": "number", "minimum": 0},

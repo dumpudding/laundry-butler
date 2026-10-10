@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import threading
 import time
+import struct
 from types import SimpleNamespace
 import unittest
 from unittest import mock
@@ -15,6 +16,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "data_collection"))
 import preflight
+from demonstration_commands import COMMAND_TOPICS, COMMAND_TRACE_TOPICS, CommandAssembler, CommandFrame
 
 GUI_TREE = ast.parse((ROOT / "data_collection/data_collection_gui.py").read_text())
 GUI_CONSTANTS = {
@@ -44,6 +46,9 @@ def gui_method(class_name, method_name):
         **GUI_CONSTANTS,
         "time": time,
         "check_received_topic_liveness": preflight.check_received_topic_liveness,
+        "Check": preflight.Check,
+        "COMMAND_TOPICS": COMMAND_TOPICS,
+        "COMMAND_TRACE_TOPICS": COMMAND_TRACE_TOPICS,
     }
     exec(compile(ast.fix_missing_locations(module), "data_collection_gui.py", "exec"), scope)
     return scope[method_name]
@@ -118,10 +123,31 @@ class ReceivedTopicLivenessTest(unittest.TestCase):
 
 
 class ReadinessIntegrationTest(unittest.TestCase):
+    def test_only_both_real_sources_pass_command_readiness(self):
+        node = SimpleNamespace(
+            lock=threading.Lock(),
+            command_assemblers={side: CommandAssembler() for side in ("left", "right")},
+            command_errors={"left": "", "right": ""},
+            count_publishers=lambda topic: 1,
+            arm_last={("live", "left", "joints"): 100, ("viewer", "right", "commands"): 100},
+        )
+        check = gui_method("MonitorNode", "check_live_commands")
+        with mock.patch.object(time, "monotonic", return_value=100):
+            self.assertEqual(check(node).status, "fail")
+            for side in ("left", "right"):
+                assembler = node.command_assemblers[side]
+                for can_id in (0x159, 0x155, 0x156, 0x157):
+                    data = struct.pack(">iHBB", 0, 0, 1, 0) if can_id == 0x159 else b"\0" * 8
+                    assembler.feed(CommandFrame(can_id, data, 100_000_000_000 + can_id), 100)
+                self.assertEqual(check(node).status, "pass" if side == "right" else "fail")
+            node.count_publishers = lambda topic: 2
+            self.assertEqual(check(node).status, "fail", "Duplicate captures must block")
+
     def mock_other_checks(self, stack):
         for name in (
             "check_dependencies", "check_nodes", "check_topics", "check_can",
             "check_command_isolation", "check_storage",
+            "check_command_liveness",
         ):
             stack.enter_context(mock.patch.object(preflight, name, return_value=preflight.Check(name, "pass", "ok")))
 
@@ -133,7 +159,7 @@ class ReadinessIntegrationTest(unittest.TestCase):
                 callback = mock.Mock(return_value=preflight.Check("Topic liveness", status, "live samples"))
                 report = preflight.run_preflight(Path("/unused"), topic_liveness_check=callback)
                 callback.assert_called_once_with()
-                self.assertEqual(len(report.checks), 8)
+                self.assertEqual(len(report.checks), 9)
                 self.assertEqual(report.status, status)
 
     def test_standalone_check_keeps_cli_fallback(self):
@@ -154,7 +180,10 @@ class ReadinessIntegrationTest(unittest.TestCase):
                     last_preflight=preflight.Report("pass", ()),
                     preflight_valid_until=time.monotonic() + 120.0,
                     pending_record_after_readiness=False,
-                    node=SimpleNamespace(check_live_topic_liveness=mock.Mock(return_value=preflight.Check("Topic liveness", status, "samples"))),
+                    node=SimpleNamespace(
+                        check_live_topic_liveness=mock.Mock(return_value=preflight.Check("Topic liveness", status, "samples")),
+                        check_live_commands=mock.Mock(return_value=preflight.Check("Demonstration commands", "pass", "actual frames")),
+                    ),
                     metadata=mock.Mock(return_value=None),
                     run_preflight_async=mock.Mock(),
                 )
@@ -167,6 +196,33 @@ class ReadinessIntegrationTest(unittest.TestCase):
                 else:
                     window.run_preflight_async.assert_not_called()
                     window.metadata.assert_called_once_with()
+
+    def test_missing_commands_block_even_with_fresh_observations(self):
+        window = SimpleNamespace(
+            recorder=None, playback=None, worker_active=False,
+            last_preflight=preflight.Report("pass", ()),
+            preflight_valid_until=time.monotonic() + 120,
+            pending_record_after_readiness=False,
+            node=SimpleNamespace(
+                check_live_topic_liveness=lambda: preflight.Check("observations", "pass", "fresh"),
+                check_live_commands=lambda: preflight.Check("commands", "fail", "no real targets"),
+            ),
+            metadata=mock.Mock(), run_preflight_async=mock.Mock(),
+        )
+        gui_method("Window", "start_episode")(window)
+        window.metadata.assert_not_called()
+        window.run_preflight_async.assert_called_once_with(automatic=True)
+
+    def test_command_loss_stops_and_marks_unusable(self):
+        window = SimpleNamespace(
+            recorder=SimpleNamespace(stop_requested_at=0), current_episode=None,
+            node=SimpleNamespace(check_live_commands=lambda: preflight.Check("commands", "fail", "lost right targets")),
+            command_capture_error=None, request_recorder_stop=mock.Mock(),
+            preflight_result=mock.Mock(), statusBar=mock.Mock(return_value=mock.Mock()),
+        )
+        gui_method("Window", "check_recording_commands")(window)
+        self.assertEqual(window.command_capture_error, "lost right targets")
+        window.request_recorder_stop.assert_called_once_with("unusable")
 
 
 if __name__ == "__main__":

@@ -12,6 +12,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
 
+from demonstration_commands import COMMAND_TOPICS, COMMAND_TRACE_TOPICS
+
 CAMERA_NODES = {
     "/camera_f/camera_f",
     "/camera_l/camera_l",
@@ -38,7 +40,8 @@ ARM_TOPICS = (
     "/piper_left_ctrl_node/arm_status",
     "/piper_right_ctrl_node/arm_status",
 )
-REQUIRED_TOPICS = CAMERA_TOPICS + ARM_TOPICS
+OBSERVATION_TOPICS = CAMERA_TOPICS + ARM_TOPICS
+REQUIRED_TOPICS = OBSERVATION_TOPICS + COMMAND_TOPICS + COMMAND_TRACE_TOPICS
 
 LIGHTWEIGHT_LIVENESS_TOPICS = (
     "/camera_f/color/camera_info",
@@ -101,12 +104,14 @@ def run_preflight(
     minimum_free_gb: float = 20.0,
     *,
     topic_liveness_check: Callable[[], Check] | None = None,
+    command_liveness_check: Callable[[], Check] | None = None,
 ) -> Report:
     checks = [
         check_dependencies(),
         check_nodes(),
         check_topics(),
         check_topic_liveness() if topic_liveness_check is None else topic_liveness_check(),
+        check_command_liveness() if command_liveness_check is None else command_liveness_check(),
         check_can("can_left"),
         check_can("can_right"),
         check_command_isolation(),
@@ -114,6 +119,11 @@ def run_preflight(
     ]
     status = aggregate_status(checks)
     return Report(status=status, checks=tuple(checks))
+
+
+def check_command_liveness() -> Check:
+    # Topic presence does not prove that control frames reach the CAN buses.
+    return Check("Demonstration commands", "fail", "Run the collection GUI's receive-only CAN monitor and activate joint-target teleoperation on both arms, including gripper commands")
 
 
 def aggregate_status(checks: Iterable[Check]) -> str:

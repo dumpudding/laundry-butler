@@ -10,6 +10,9 @@ This interface records, reviews, and replays synchronized Laundry Butler demonst
 - Roboto Mono Bold request with a monospace fallback when the font is unavailable;
 - three reduced-rate camera previews;
 - live left/right arm observation for joints, end pose, status, rate, and liveness;
+- independent demonstration target capture directly from the two CAN buses, with source-frame provenance;
+- arm panels prioritize measured joints and demonstration targets, with scrolling for pose/status details in smaller windows;
+- start blocked without real targets on both arms; command loss stops and preserves the episode as unusable;
 - observation-only arm and camera launch controls;
 - automatic read-only readiness checks at startup, after subsystem launch, and immediately before recording when stale;
 - one MCAP directory per episode plus metadata and validation sidecars;
@@ -50,8 +53,9 @@ The former manual “preflight” is now presented as **readiness**. It checks:
 
 - ROS 2, CAN utilities, and the MCAP plugin;
 - all expected camera and arm nodes;
-- all 12 required recording topics;
+- all 16 required recording topics (12 observations, 2 target streams, 2 provenance streams);
 - receipt of fresh camera-info, joint, and arm-status samples;
+- fresh, complete CAN joint-target cycles and an observed gripper target on each arm;
 - `can_left` and `can_right` are UP, ERROR-ACTIVE, and at 1 Mbit/s;
 - observation-only command topics and enable services remain isolated;
 - enough free storage exists at the configured output path.
@@ -60,6 +64,10 @@ The checks are still necessary because a rosbag process can start successfully w
 
 The GUI checks the most recent camera-info, joint, and arm-status samples received by its existing live subscriptions. All seven topics must have a sample no more than 3 seconds old. Playback samples do not count. This avoids creating temporary `ros2 topic echo` subscriptions that can time out during discovery while the live previews continue updating. Freshness is checked again immediately before recording, even when the other readiness checks are still valid. Standalone checks retain the CLI subscription fallback.
 
+The command check uses the GUI's own receive-only SocketCAN capture, rather than ROS topic presence or the driver's cached `/master/joint_*` values. Both arms must send complete joint-target cycles with no gap longer than 0.5 seconds. Each cycle's three joint-pair frames must arrive within 0.1 seconds. A real gripper target is required initially; its last commanded opening and effort are held until the next gripper command. A CAN reconnect, command gap, or gripper-zeroing frame clears this context. Missing values are never filled from measured feedback or zeros. Only one collection GUI may publish the capture topics in the ROS domain.
+
+This supports Piper V2 **joint-target teleoperation**. A controller sending only Cartesian, MIT, or feedback frames will remain blocked, with a message to activate a compatible target stream. The GUI monitors targets; it does not enable or move the arms.
+
 ## Workflow
 
 1. Put both arms in the manufacturer-required horizontal/reset pose.
@@ -67,14 +75,14 @@ The GUI checks the most recent camera-info, joint, and arm-status samples receiv
 3. Preserve the labeled LARM and RARM USB/CAN connections.
 4. Keep the emergency stop accessible.
 5. Start or attach to cameras and observation-only arms.
-6. Confirm the camera and arm observation panels.
+6. Activate leader/handheld joint-target teleoperation, send initial gripper targets on both arms, and confirm both demonstration-target panels as well as the observations.
 7. Fill in the episode metadata.
 8. Select **Start episode**. The GUI runs readiness automatically when the previous result is stale.
 9. Stop and keep, or stop and mark unusable.
 10. Select the episode to edit outcome, disposition, and notes.
 11. Play the episode to review synchronized camera and arm topics.
 
-Under the current collection policy, **Stop and keep** (`A`) defaults a completed, usable episode's outcome to **Success**. Already assessed outcomes and explicit review edits are preserved. Unusable episodes and recordings that fail to complete do not receive this default.
+Under the current collection policy, **Stop and keep** (`A`) defaults a completed, validated usable episode's outcome to **Success**. Already assessed outcomes and explicit review edits are preserved. Unusable episodes and recordings that fail to complete do not receive this default.
 
 ## Recording shortcuts
 
@@ -101,9 +109,21 @@ Press the letter without Ctrl or Alt while the collection window is active. Shor
 /puppet/end_pose_right
 /piper_left_ctrl_node/arm_status
 /piper_right_ctrl_node/arm_status
+/laundry_butler/demonstration/command_left
+/laundry_butler/demonstration/command_right
+/laundry_butler/demonstration/source_left
+/laundry_butler/demonstration/source_right
 ```
 
-`/master/joint_left` and `/master/joint_right` remain excluded.
+The command topics are `sensor_msgs/msg/JointState` with `joint0..5` in radians, `joint6` as the commanded gripper opening in metres, and commanded gripper effort in `effort[6]` (N m). Their header uses the actual kernel CAN receive timestamp. New commands are emitted only when a complete new joint-target cycle or a real gripper command arrives; there is no timer republishing cached targets.
+
+The source topics are `std_msgs/msg/String` JSON records containing the exact four source CAN frames, their individual receive timestamps, and the CAN interface. Joint targets come from `0x155/0x156/0x157` and gripper targets from `0x159`, decoded using the Piper V2 protocol. The receiver uses raw sockets without initializing the Piper SDK or sending CAN frames. `/master/joint_left` and `/master/joint_right` remain excluded because the existing driver refreshes timestamps on cached values.
+
+After recording, validation checks nonzero command counts, gaps and edge coverage, exact seven-value layout, source timestamps, units, and agreement between targets and source frames. A failed new recording is marked unusable. Old observation-only episodes remain readable and receive an explicit warning that they lack independent actions; their bags are not changed.
+
+Independent ROS subscriptions can start/stop one message apart. Unpaired source/target samples within 50 ms of the paired stream's boundary produce a warning and are excluded from `validation.json.command_verified_interval_ns`. Any unpaired interior sample fails validation. Conversion must stay inside that verified common interval and use timestamp-matched source/target samples.
+
+For conversion, use `/puppet/joint_*` for `observation.state` and these independent target streams for `action`, aligned by timestamps. Do not silently copy measured state into action for new episodes. GUI recording does not itself convert or repair existing datasets.
 
 ## Output
 

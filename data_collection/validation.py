@@ -10,8 +10,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from episode_store import write_json_atomic
-from preflight import CAMERA_TOPICS, REQUIRED_TOPICS
+from command_validation import CommandAudit
+from demonstration_commands import COMMAND_MAX_AGE_SECONDS, COMMAND_TOPICS, COMMAND_TRACE_TOPICS
+from episode_store import read_json, write_json_atomic
+from preflight import CAMERA_TOPICS, OBSERVATION_TOPICS, REQUIRED_TOPICS
 
 CAMERA_RATE_RANGE = (24.0, 36.0)
 ARM_RATE_RANGE = (160.0, 240.0)
@@ -22,6 +24,7 @@ class TopicStats:
     count: int
     first_timestamp_ns: int | None
     last_timestamp_ns: int | None
+    maximum_gap_seconds: float = 0.0
 
     @property
     def duration_seconds(self) -> float:
@@ -53,9 +56,12 @@ def validate_episode(
     validation_path: Path,
     recorder_log: Path,
 ) -> dict[str, Any]:
+    episode_path = bag_dir.parent / "episode.json"
+    metadata = read_json(episode_path) if episode_path.is_file() else {}
+    audit = CommandAudit()
     indexed_by = "rosbag2_py"
     try:
-        stats = index_with_rosbag2_py(bag_dir)
+        stats = index_with_rosbag2_py(bag_dir, audit)
     except Exception as exc:
         indexed_by = "ros2 bag info fallback"
         stats = index_with_bag_info(bag_dir)
@@ -64,7 +70,13 @@ def validate_episode(
         index_warning = None
 
     checks: list[dict[str, str]] = []
-    missing = sorted(set(REQUIRED_TOPICS) - set(stats))
+    command_topics = COMMAND_TOPICS + COMMAND_TRACE_TOPICS
+    require_commands = bool(
+        metadata.get("demonstration_commands")
+        or set(command_topics) & (set(stats) | set(metadata.get("recorded_topics", [])))
+    )
+    required_topics = REQUIRED_TOPICS if require_commands else OBSERVATION_TOPICS
+    missing = sorted(set(required_topics) - set(stats))
     if missing:
         checks.append(
             {
@@ -78,15 +90,21 @@ def validate_episode(
             {
                 "name": "Required topics",
                 "status": "pass",
-                "detail": f"All {len(REQUIRED_TOPICS)} topics recorded",
+                "detail": f"All {len(required_topics)} topics recorded",
             }
         )
 
     rate_failures: list[str] = []
     rate_warnings: list[str] = []
-    for topic in REQUIRED_TOPICS:
+    for topic in required_topics:
         topic_stats = stats.get(topic)
         if topic_stats is None:
+            continue
+        if topic in command_topics:
+            if topic_stats.count < 2 or topic_stats.rate_hz == 0.0:
+                rate_failures.append(f"{topic}: fewer than two timed samples")
+            elif topic_stats.maximum_gap_seconds > COMMAND_MAX_AGE_SECONDS:
+                rate_failures.append(f"{topic}: command gap {topic_stats.maximum_gap_seconds:.3f} s")
             continue
         low, high = CAMERA_RATE_RANGE if topic in CAMERA_TOPICS else ARM_RATE_RANGE
         rate = topic_stats.rate_hz
@@ -122,7 +140,28 @@ def validate_episode(
             }
         )
 
-    overlap = timestamp_overlap(stats)
+    if require_commands:
+        if indexed_by == "rosbag2_py":
+            checks.append(audit.result())
+            # Check missing commands at the episode edges as well as internal gaps.
+            observations = [stats[topic] for topic in OBSERVATION_TOPICS if topic in stats]
+            if observations:
+                start = min(item.first_timestamp_ns or 0 for item in observations)
+                end = max(item.last_timestamp_ns or 0 for item in observations)
+                edge_failures = [topic for topic in command_topics if topic in stats and (
+                    ((stats[topic].first_timestamp_ns or 0) - start) / 1e9 > COMMAND_MAX_AGE_SECONDS
+                    or (end - (stats[topic].last_timestamp_ns or 0)) / 1e9 > COMMAND_MAX_AGE_SECONDS
+                )]
+                checks.append({"name": "Command coverage", "status": "fail" if edge_failures else "pass",
+                               "detail": "Missing episode edges: " + ", ".join(edge_failures) if edge_failures else "Command streams cover observation timestamps within 0.5 s"})
+        else:
+            checks.append({"name": "Command provenance", "status": "fail", "detail": "Cannot verify command contents or source timestamps using bag-info fallback"})
+    else:
+        checks.append({"name": "Demonstration commands", "status": "warn", "detail": "Legacy observation-only episode; no independent demonstration actions recorded"})
+    if metadata.get("command_capture_error"):
+        checks.append({"name": "Command capture", "status": "fail", "detail": str(metadata["command_capture_error"])})
+
+    overlap = timestamp_overlap(stats, required_topics)
     if overlap is None:
         checks.append(
             {
@@ -170,7 +209,9 @@ def validate_episode(
 
     status = aggregate(check["status"] for check in checks)
     payload = {
-        "schema_version": "1.0",
+        "schema_version": "1.1",
+        "has_demonstration_commands": require_commands and not any(check["status"] == "fail" for check in checks),
+        "command_verified_interval_ns": audit.verified_interval() if require_commands and indexed_by == "rosbag2_py" else None,
         "generated_at": utc_now_iso(),
         "status": status,
         "indexed_by": indexed_by,
@@ -194,7 +235,7 @@ def aggregate(statuses) -> str:
     return "pass"
 
 
-def index_with_rosbag2_py(bag_dir: Path) -> dict[str, TopicStats]:
+def index_with_rosbag2_py(bag_dir: Path, audit: CommandAudit | None = None) -> dict[str, TopicStats]:
     import rosbag2_py  # type: ignore
 
     reader = rosbag2_py.SequentialReader()
@@ -205,15 +246,19 @@ def index_with_rosbag2_py(bag_dir: Path) -> dict[str, TopicStats]:
     converter_options = rosbag2_py.ConverterOptions("", "")
     reader.open(storage_options, converter_options)
 
-    mutable: dict[str, list[int | None]] = {}
+    mutable: dict[str, list[Any]] = {}
     while reader.has_next():
-        topic, _data, timestamp = reader.read_next()
+        topic, data, timestamp = reader.read_next()
+        if audit is not None and topic in COMMAND_TOPICS + COMMAND_TRACE_TOPICS:
+            audit.add(topic, data, int(timestamp))
         if topic not in mutable:
-            mutable[topic] = [0, None, None]
+            mutable[topic] = [0, None, None, 0.0]
         entry = mutable[topic]
         entry[0] = int(entry[0] or 0) + 1
         if entry[1] is None:
             entry[1] = int(timestamp)
+        if entry[2] is not None:
+            entry[3] = max(entry[3], (timestamp - entry[2]) / 1e9)
         entry[2] = int(timestamp)
 
     return {
@@ -225,6 +270,7 @@ def index_with_rosbag2_py(bag_dir: Path) -> dict[str, TopicStats]:
             last_timestamp_ns=(
                 int(values[2]) if values[2] is not None else None
             ),
+            maximum_gap_seconds=values[3],
         )
         for topic, values in mutable.items()
     }
@@ -283,15 +329,16 @@ def parse_bag_info_text(text: str) -> dict[str, TopicStats]:
 
 def timestamp_overlap(
     stats: dict[str, TopicStats],
+    required_topics: tuple[str, ...] = REQUIRED_TOPICS,
 ) -> tuple[float, float] | None:
     selected = [
         stats[topic]
-        for topic in REQUIRED_TOPICS
+        for topic in required_topics
         if topic in stats
         and stats[topic].first_timestamp_ns is not None
         and stats[topic].last_timestamp_ns is not None
     ]
-    if len(selected) != len(REQUIRED_TOPICS):
+    if len(selected) != len(required_topics):
         return None
 
     common_start = max(int(item.first_timestamp_ns or 0) for item in selected)
